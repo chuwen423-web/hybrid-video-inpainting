@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-Object Tracker</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --ink:#1d2330; --mute:#667085; --line:#e3e6ea; --acc:#0f5c4d; --warn:#b42318; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 "Segoe UI", system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:var(--acc); color:#fff; padding:14px 24px; }
+  header h1 { margin:0; font-size:20px; } header p { margin:2px 0 0; opacity:.85; font-size:13px; }
+  main { max-width:1280px; margin:0 auto; padding:16px; display:grid; gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; min-width:0; }
+  .card h2 { margin:0 0 10px; font-size:15px; color:var(--acc); display:flex; align-items:center; gap:8px; }
+  .step { display:inline-block; width:22px; height:22px; border-radius:50%; background:var(--acc); color:#fff; text-align:center; font-size:12px; line-height:22px; }
+  .dim { opacity:.45; pointer-events:none; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  button { border:1px solid var(--line); background:#fff; border-radius:6px; padding:6px 12px; cursor:pointer; font:inherit; }
+  button.act { background:var(--acc); color:#fff; border-color:var(--acc); }
+  button.on { background:#e6f2ef; border-color:var(--acc); }
+  button.sm { padding:2px 8px; font-size:12px; }
+  button:disabled { opacity:.5; cursor:default; }
+  select { font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; }
+  .bar { height:8px; background:#e9ecef; border-radius:4px; overflow:hidden; flex:1; min-width:200px; }
+  .bar > div { height:100%; background:var(--acc); width:0; transition:width .4s; }
+  .status { color:var(--mute); font-size:13px; }
+  .err { color:var(--warn); font-weight:600; }
+  pre { background:#0f172a; color:#d1e3ff; padding:8px 10px; border-radius:6px; max-height:150px; overflow:auto; font-size:12px; margin:8px 0 0; white-space:pre-wrap; word-break:break-word; }
+  .grid2 { display:grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap:14px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns:1fr; } }
+  video { width:100%; max-height:70vh; background:#000; border-radius:6px; display:block; }
+  .scroll { max-height:70vh; overflow:auto; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { border-bottom:1px solid var(--line); padding:5px 6px; text-align:left; vertical-align:middle; }
+  th { position:sticky; top:0; background:#fff; z-index:1; }
+  tr.off td:not(:first-child) { opacity:.4; }
+  td img { height:44px; border-radius:4px; display:block; }
+  .tag { display:inline-block; min-width:30px; padding:1px 6px; border-radius:10px; color:#fff; font-weight:600; font-size:12px; text-align:center; }
+  .tl { position:relative; height:12px; background:#eef0f3; border-radius:3px; min-width:140px; cursor:pointer; }
+  .tl.big { height:16px; }
+  .tl span { position:absolute; top:0; bottom:0; border-radius:2px; }
+  .tl span.yolo { top:auto; height:4px; bottom:0; opacity:.55; }
+  .tl i { position:absolute; top:-2px; bottom:-2px; width:2px; background:#111; pointer-events:none; }
+  .chips button { margin:2px 4px 2px 0; }
+  .note { color:var(--mute); font-size:12px; margin-top:6px; }
+  .legend span { display:inline-flex; align-items:center; gap:4px; margin-right:12px; }
+  .legend b { display:inline-block; width:18px; height:8px; border-radius:2px; background:#667085; }
+  .stat { display:flex; gap:18px; flex-wrap:wrap; margin:4px 0 10px; }
+  .stat div { background:#f1f5f4; border-radius:8px; padding:6px 12px; }
+  .stat b { display:block; font-size:18px; color:var(--acc); }
+  nav { display:flex; gap:4px; margin-top:10px; }
+  nav a { color:#fff; text-decoration:none; padding:5px 14px; border-radius:6px 6px 0 0; background:#ffffff22; font-size:13px; }
+  nav a.on { background:var(--bg); color:var(--acc); font-weight:600; }
+  body.show .trackOnly, body:not(.show) .showOnly { display:none !important; }
+  .nm { cursor:text; border-bottom:1px dashed transparent; }
+  .nm:hover { border-bottom-color:var(--mute); }
+  .nm::after { content:" \270E"; font-weight:400; font-size:12px; color:var(--mute); opacity:0; }
+  .nm:hover::after { opacity:1; }
+  input.nmEdit { font:inherit; font-weight:600; width:100%; max-width:180px; padding:2px 6px; border:1px solid var(--acc); border-radius:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Multi-Object Tracker</h1>
+  <p>Upload a video → YOLOX finds every object in every frame and links the boxes into instances → choose instances → SAM 2 tracks all of them at once, pixel by pixel. Runs locally on this computer.</p>
+  <nav><a href="#" id="navTrack">Track a video</a><a href="#show" id="navShow">Test results</a></nav>
+</header>
+<main>
+  <section class="card" id="s1"><h2><span class="step">1</span><span class="trackOnly">Choose a video</span><span class="showOnly">Test results (final runs, read-only)</span></h2>
+    <div class="showOnly"><div class="row" id="showBtns"></div><div class="note" id="showNote" style="font-size:13px"></div></div>
+    <div class="row trackOnly">
+      <input type="file" id="file" accept="video/*"><button class="act" id="upload">Upload &amp; detect</button>
+      <span class="status">or a test clip:</span><select id="samples"></select><button id="useSample">Use test clip</button>
+    </div>
+    <div class="row" style="margin-top:10px"><div class="bar trackOnly"><div id="prog"></div></div><span class="status" id="stat">No video yet.</span></div>
+    <pre id="log" hidden></pre>
+  </section>
+
+  <section class="card dim" id="s2"><h2><span class="step">2</span>Detected object instances <span class="status" style="font-weight:400">(YOLOX + IoU linking — each instance has its own number, even several objects of the same class)</span></h2>
+    <div class="grid2">
+      <div><video id="boxVid" controls muted playsinline></video>
+        <div class="note">Boxes only, from the detector. A number can break when the detector misses an object for a while or the object leaves the frame — SAM 2 in step 3 joins those pieces again.</div></div>
+      <div>
+        <div class="row chips trackOnly"><span class="status">Select:</span><button class="sm" id="selAll">All</button><button class="sm" id="selNone">None</button><span id="clsChips"></span></div>
+        <div class="scroll" style="max-height:56vh;margin-top:6px"><table id="inst"></table></div>
+        <div class="row" style="margin-top:10px"><button class="act trackOnly" id="track">Track selected (SAM 2)</button><span class="status" id="selInfo"></span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card dim" id="s3"><h2><span class="step">3</span>Tracking result <span class="status" style="font-weight:400">(SAM 2, all objects at once)</span></h2>
+    <div class="stat" id="sum"></div>
+    <div class="grid2">
+      <div><video id="trkVid" controls muted playsinline></video>
+        <div class="row" style="margin-top:8px">
+          <a id="dl1" download><button class="sm">Video</button></a><a id="dl2" download><button class="sm">Side-by-side</button></a>
+          <a id="dl3" download><button class="sm">Tracks (CSV)</button></a><a id="dl4" download><button class="sm">Masks (PNG zip)</button></a></div>
+        <div class="note">CSV: one row per object per frame — frame, time, id, class, box (x, y, w, h), mask area. Masks: one PNG per frame, pixel value = object number (0 = background).</div></div>
+      <div>
+        <div class="legend status"><span><b></b>SAM 2 mask</span><span><b style="height:4px;opacity:.55"></b>YOLOX box</span><span>click a timeline to jump there</span></div>
+        <div class="scroll" style="max-height:62vh;margin-top:6px"><table id="res"></table></div>
+      </div>
+    </div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const MAX_OBJ = 16;
+const SHOW = location.hash.startsWith("#show");  // "Test results" 标签页：只展示保存好的最终测试结果
+let job = null, jid = SHOW ? null : location.hash.slice(1) || null, polling = false;
+let sel = new Set(), shownDet = null, shownRes = null;
+
+async function api(url, opts) { const r = await fetch(url, opts); const j = await r.json(); if (j.error) throw new Error(j.error); return j; }
+function fail(e) { $("stat").innerHTML = `<span class="err">${e.message || e}</span>`; }
+const ink = c => { const n = parseInt(c.slice(1), 16); return 0.299 * (n >> 16) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255) > 150 ? "#000" : "#fff"; };  // 浅色底用黑字
+const sec = f => (f / job.fps).toFixed(1);
+const file = (name, dl) => `/api/jobs/${jid}/${dl ? "download" : "file"}/${name}`;
+
+async function init() {
+  document.body.classList.toggle("show", SHOW);
+  $(SHOW ? "navShow" : "navTrack").classList.add("on");
+  ["navTrack", "navShow"].forEach(id => $(id).onclick = e => { e.preventDefault(); location.hash = id === "navShow" ? "show" : ""; location.reload(); });
+  if (SHOW) return initShow();
+  const s = await api("/api/samples");
+  $("samples").innerHTML = s.map(x => `<option>${x}</option>`).join("");
+  if (jid) poll();
+}
+async function initShow() {
+  const list = await api("/api/showcase");
+  if (!list.length) { $("showNote").textContent = "No saved test results found."; return; }
+  $("showBtns").innerHTML = list.map((s, i) => `<button data-i="${i}">${s.clip}</button>`).join("");
+  const pick = s => {
+    $("showBtns").querySelectorAll("button").forEach(b => b.classList.toggle("on", list[+b.dataset.i] === s));
+    $("showNote").textContent = s.note;
+    history.replaceState(null, "", "#show=" + s.clip);
+    jid = s.id; sel = new Set(); shownDet = shownRes = null; poll();
+  };
+  $("showBtns").querySelectorAll("button").forEach(b => b.onclick = () => pick(list[+b.dataset.i]));
+  const want = location.hash.split("=")[1];
+  pick(list.find(s => s.clip === want) || list[0]);
+}
+$("upload").onclick = async () => {
+  const f = $("file").files[0]; if (!f) return fail("Choose a video file first.");
+  $("stat").textContent = "Uploading…";
+  try { const j = await api("/api/upload", { method: "POST", headers: { "X-Filename": encodeURIComponent(f.name) }, body: f }); start(j.id); } catch (e) { fail(e); }
+};
+$("useSample").onclick = async () => { try { const j = await api("/api/sample", { method: "POST", body: JSON.stringify({ name: $("samples").value }) }); start(j.id); } catch (e) { fail(e); } };
+function start(id) { jid = id; location.hash = id; sel = new Set(); shownDet = shownRes = null; poll(); }
+
+async function poll() {
+  if (polling) return; polling = true;
+  try {
+    while (true) {
+      job = await api(`/api/jobs/${jid}`);
+      render();
+      if (!job.busy) break;
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  } catch (e) { fail(e); }
+  polling = false;
+}
+
+function render() {
+  const busy = job.busy;
+  $("prog").style.width = (busy ? job.progress || 3 : 100) + "%";
+  $("stat").innerHTML = job.error ? `<span class="err">${job.error}</span>` :
+    busy ? `Running: ${busy}… ${Math.round(Date.now() / 1000 - job.step_started)} s` :
+    `${job.name} · ${job.frames || "?"} frames · ${job.width || "?"}×${job.height || "?"} @ ${job.fps || "?"} fps · stage: ${job.stage}`;
+  $("log").hidden = !(job.log && job.log.length); $("log").textContent = (job.log || []).join("\n"); $("log").scrollTop = 1e9;
+  ["upload", "useSample", "track"].forEach(id => $(id).disabled = !!busy);
+  $("s2").classList.toggle("dim", !["detected", "tracked"].includes(job.stage));
+  $("s3").classList.toggle("dim", job.stage !== "tracked" || !!busy);
+  if (job.objects && shownDet !== jid) { shownDet = jid; initDetections(); }
+  if (job.stage === "tracked" && !busy && shownRes !== jid + job.log.length) { shownRes = jid + job.log.length; renderResult(); }
+}
+
+// ---------- step 2 ----------
+function timeline(segs, col, cls = "", extra = "") {
+  const n = job.frames;
+  return segs.map(([a, b]) => `<span class="${cls}" style="left:${100 * a / n}%;width:${Math.max(0.4, 100 * (b - a + 1) / n)}%;background:${col}"></span>`).join("") + extra;
+}
+function initDetections() {
+  $("boxVid").src = file("boxes.mp4") + "?" + Date.now();
+  const objs = job.objects;
+  if (job.result && job.result.tracks) {  // 已经追踪过：恢复上次的选择（合并前的编号）
+    job.result.tracks.forEach(t => { sel.add(t.id); (t.merged_from || []).forEach(i => sel.add(i)); });
+  } else {
+    [...objs].sort((a, b) => b.yolo_frames - a.yolo_frames).slice(0, MAX_OBJ).forEach(o => sel.add(o.id));
+  }
+  const classes = [...new Set(objs.map(o => o.cls))];
+  $("clsChips").innerHTML = classes.map(c => `<button class="sm" data-c="${c}">${c} (${objs.filter(o => o.cls === c).length})</button>`).join("");
+  $("clsChips").querySelectorAll("button").forEach(b => b.onclick = () => {  // 点一下：只选这一类 / 再点：这一类全部取消
+    const ids = objs.filter(o => o.cls === b.dataset.c).map(o => o.id);
+    const all = ids.every(i => sel.has(i));
+    ids.forEach(i => all ? sel.delete(i) : sel.add(i)); renderInst();
+  });
+  renderInst();
+}
+function renderInst() {
+  const objs = job.objects;
+  if (!objs.length) { $("inst").innerHTML = `<tr><td class="status">Nothing detected in this video.</td></tr>`; return; }
+  $("inst").innerHTML = `<tr><th></th><th>#</th><th></th><th>Object</th><th>Seen by YOLOX</th><th style="width:34%">Timeline</th></tr>` + objs.map(o =>
+    `<tr class="${sel.has(o.id) ? "" : "off"}" data-id="${o.id}"><td><input type="checkbox" ${sel.has(o.id) ? "checked" : ""} ${SHOW ? "disabled" : ""}></td>
+      <td><span class="tag" style="background:${o.color};color:${ink(o.color)}">#${o.id}</span></td><td><img src="${file(o.thumb)}"></td>
+      <td>${nameCell(o.id, o.cls, `score ${o.best_score}`)}</td>
+      <td>${o.yolo_frames} frames<br><span class="status">${o.yolo_segments.map(([a, b]) => `${sec(a)}–${sec(b)} s`).join(", ")}</span></td>
+      <td><div class="tl" data-seek="boxVid">${timeline(o.yolo_segments, o.color)}</div></td></tr>`).join("");
+  $("inst").querySelectorAll("tr[data-id]").forEach(tr => tr.querySelector("input").onchange = e => {
+    const id = +tr.dataset.id; e.target.checked ? sel.add(id) : sel.delete(id); renderInst(); });
+  bindSeek($("inst"));
+  const k = sel.size;
+  if (SHOW) { $("selInfo").textContent = `${k} of ${objs.length} instances were sent to SAM 2 in this run (ticked).`; return; }
+  $("selInfo").innerHTML = k > MAX_OBJ ? `<span class="err">${k} selected — at most ${MAX_OBJ} at once.</span>` :
+    `${k} selected · about ${Math.max(1, Math.round(job.frames * (0.15 + 0.06 * k) / 60))} min on this computer`;
+  $("track").disabled = !!job.busy || !k || k > MAX_OBJ;
+}
+$("selAll").onclick = () => { job.objects.forEach(o => sel.add(o.id)); renderInst(); };
+$("selNone").onclick = () => { sel.clear(); renderInst(); };
+$("track").onclick = async () => {
+  try { await api(`/api/jobs/${jid}/track`, { method: "POST", body: JSON.stringify({ ids: [...sel] }) }); shownRes = null; poll(); } catch (e) { fail(e); }
+};
+
+// ---------- step 3 ----------
+function renderResult() {
+  const r = job.result, tr = r.tracks;
+  $("trkVid").src = file("tracked.mp4") + "?" + Date.now();
+  [["dl1", "tracked.mp4"], ["dl2", "compare.mp4"], ["dl3", "tracks.csv"], ["dl4", "label_masks.zip"]].forEach(([id, f]) => $(id).href = file(f, true));
+  const merged = tr.reduce((s, t) => s + t.merged_from.length, 0);
+  const yolo = tr.reduce((s, t) => s + t.yolo_frames, 0), sam = tr.reduce((s, t) => s + t.sam_frames, 0);
+  $("sum").innerHTML = `<div><b>${tr.length}</b>objects tracked</div><div><b>${r.selected}</b>instances selected</div>
+    <div><b>${merged}</b>duplicates joined</div><div><b>${yolo ? Math.round(100 * sam / yolo) : "–"}%</b>SAM 2 frames vs YOLOX frames</div>`;
+  renderResTable();
+}
+function renderResTable() {  // 只重画表格（改名后调用，不重新加载视频）
+  const tr = job.result.tracks;
+  $("res").innerHTML = `<tr><th>#</th><th></th><th>Object</th><th>YOLOX</th><th>SAM 2</th><th>Size</th><th style="width:36%">Timeline</th></tr>` + tr.map(t =>
+    `<tr><td><span class="tag" style="background:${t.color};color:${ink(t.color)}">#${t.id}</span></td><td><img src="${file(t.thumb)}"></td>
+      <td>${nameCell(t.id, t.cls, t.merged_from.length ? `joined ${t.merged_from.map(i => "#" + i).join(", ")}` : "")}</td>
+      <td>${t.yolo_frames}</td><td><b>${t.sam_frames}</b><br><span class="status">${t.sam_segments.map(([a, b]) => `${sec(a)}–${sec(b)}`).join(", ")} s</span></td>
+      <td>${t.mean_area_pct}%</td>
+      <td><div class="tl big" data-seek="trkVid">${timeline(t.sam_segments, t.color) + timeline(t.yolo_segments, "#1d2330", "yolo")}<i></i></div></td></tr>`).join("");
+  bindSeek($("res"));
+}
+// ---------- 自定义物体名称（step 2 和 step 3 共用） ----------
+// 名字按"物体"保存：被合并进 #1 的 #6、#8… 和 #1 是同一个物体，显示同一个名字；在任一步改名，两边一起变。
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function rootOf(id) {
+  const t = ((job.result && job.result.tracks) || []).find(t => t.id === id || (t.merged_from || []).includes(id));
+  return t ? t.id : id;
+}
+function nameOf(id, cls) {  // 先看整个物体的名字，再看它的各个检测编号（追踪前改过的名字合并后仍然有效）
+  const L = job.labels || {}, r = rootOf(id);
+  const t = ((job.result && job.result.tracks) || []).find(t => t.id === r);
+  const ids = [r, ...((t && t.merged_from) || [])];
+  const hit = ids.find(i => L[i] != null);
+  return hit != null ? L[hit] : cls;
+}
+function nameCell(id, cls, sub) {
+  const n = nameOf(id, cls), renamed = n !== cls;
+  const info = [renamed ? `YOLOX: ${esc(cls)}` : "", esc(sub || "")].filter(Boolean).join(" · ");
+  return `<b class="nm" data-nid="${rootOf(id)}" data-cls="${esc(cls)}" title="Click to rename this object">${esc(n)}</b>` +
+    (info ? `<br><span class="status">${info}</span>` : "");
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest(".nm");
+  if (!b || job.busy) return;
+  const id = +b.dataset.nid, old = nameOf(id, b.dataset.cls);
+  const inp = document.createElement("input");
+  inp.type = "text"; inp.value = old; inp.maxLength = 40; inp.className = "nmEdit"; inp.placeholder = b.dataset.cls;
+  b.replaceWith(inp); inp.focus(); inp.select();
+  let done = false;
+  const finish = async save => {
+    if (done) return; done = true;
+    const name = inp.value.trim();
+    if (save && name !== old) {
+      const t = ((job.result && job.result.tracks) || []).find(t => t.id === id);
+      try { job.labels = (await api(`/api/jobs/${jid}/label`, { method: "POST", body: JSON.stringify({ id, name, same: (t && t.merged_from) || [] }) })).labels; }
+      catch (err) { fail(err); }
+    }
+    renderInst(); if (job.result && job.result.tracks) renderResTable();
+  };
+  inp.onkeydown = ev => { if (ev.key === "Enter") finish(true); else if (ev.key === "Escape") finish(false); };
+  inp.onblur = () => finish(true);
+});
+function bindSeek(root) {
+  root.querySelectorAll(".tl").forEach(d => d.onclick = e => {
+    const r = d.getBoundingClientRect(), v = $(d.dataset.seek);
+    if (v.duration) { v.currentTime = (e.clientX - r.left) / r.width * v.duration; v.pause(); }
+  });
+}
+$("trkVid").ontimeupdate = () => {  // 时间轴上的竖线跟着视频走
+  const v = $("trkVid"), p = v.duration ? 100 * v.currentTime / v.duration : 0;
+  $("res").querySelectorAll(".tl i").forEach(i => i.style.left = p + "%");
+};
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Inpainting Demo</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1d2330; --mute:#667085; --line:#e3e6ea; --acc:#1f4e79; --good:#1a7f37; --bad:#b42318; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 "Segoe UI", system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:var(--acc); color:#fff; padding:14px 24px; }
+  header h1 { margin:0; font-size:20px; } header p { margin:2px 0 0; opacity:.85; font-size:13px; }
+  main { max-width:1280px; margin:0 auto; padding:16px; display:grid; gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card h2 { margin:0 0 10px; font-size:15px; color:var(--acc); }
+  .step { display:inline-block; width:22px; height:22px; border-radius:50%; background:var(--acc); color:#fff; text-align:center; font-size:12px; line-height:22px; margin-right:6px; }
+  .clips { display:flex; gap:10px; flex-wrap:wrap; }
+  .clips button, .methods label { border:1px solid var(--line); background:#fff; border-radius:8px; padding:8px 12px; cursor:pointer; text-align:left; }
+  .clips button.on, .methods label.on { border-color:var(--acc); box-shadow:0 0 0 2px #1f4e7933; }
+  .clips b { display:block; }
+  .clips span { color:var(--mute); font-size:12px; }
+  .grid2 { display:grid; grid-template-columns: 1.4fr 1fr; gap:14px; }
+  img.sheet { width:100%; border-radius:6px; border:1px solid var(--line); }
+  .facts { color:var(--mute); font-size:13px; margin:6px 0; }
+  .obj { display:flex; gap:8px; padding:6px 0; border-top:1px dashed var(--line); }
+  .obj:first-child { border-top:0; }
+  .obj small { display:block; color:var(--mute); }
+  .methods { display:grid; gap:6px; }
+  .methods small { color:var(--mute); display:block; }
+  .methods label.na { opacity:.45; cursor:default; }
+  .players { display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:10px; }
+  .players figure { margin:0; } .players figcaption { font-weight:600; font-size:13px; margin-bottom:4px; }
+  video { width:100%; max-height:62vh; background:#000; border-radius:6px; }
+  .bar { display:flex; gap:10px; align-items:center; margin-top:8px; flex-wrap:wrap; }
+  .bar input[type=range] { flex:1; min-width:200px; }
+  button.act { background:var(--acc); color:#fff; border:0; border-radius:6px; padding:7px 14px; cursor:pointer; }
+  button.act:disabled { opacity:.5; cursor:default; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { border-bottom:1px solid var(--line); padding:5px 8px; text-align:right; } th:first-child, td:first-child { text-align:left; }
+  tr.sel td { background:#eef4fb; font-weight:600; }
+  .note { color:var(--mute); font-size:12px; margin-top:6px; }
+  .imgs { display:grid; gap:10px; } .imgs img { width:100%; border:1px solid var(--line); border-radius:6px; }
+  pre { background:#0f172a; color:#d1e3ff; padding:10px; border-radius:6px; max-height:220px; overflow:auto; font-size:12px; margin:8px 0 0; }
+  .tabs button { border:1px solid var(--line); background:#fff; padding:5px 10px; border-radius:6px; cursor:pointer; margin-right:4px; }
+  .tabs button.on { background:var(--acc); color:#fff; border-color:var(--acc); }
+  @media (max-width: 900px) { .grid2 { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Hybrid Video Inpainting — Week 4 prototype</h1>
+  <p>Detect → confirm → track (SAM 2) → remove / replace → temporal fix (flicker &amp; halo). Runs locally, no cloud cost.</p>
+</header>
+<main>
+  <section class="card"><h2><span class="step">1</span>Choose a video</h2><div class="clips" id="clips"></div></section>
+
+  <section class="grid2">
+    <div class="card"><h2><span class="step">2</span>Detection &amp; confirmation</h2>
+      <img class="sheet" id="sheet" alt="key frames with detection boxes and timeline">
+      <div class="facts" id="facts"></div>
+      <div class="note" id="sheetNote">Green ticks: frames where YOLOX found the target. Blue bar: segment that is processed. Frames outside it are left untouched.</div>
+    </div>
+    <div class="card"><h2><span class="step">3</span>Objects &amp; method</h2>
+      <div id="objects"></div>
+      <h2 style="margin-top:14px">Method</h2>
+      <div class="methods" id="methods"></div>
+    </div>
+  </section>
+
+  <section class="card"><h2><span class="step">4</span>Result</h2>
+    <div class="tabs"><button id="tabSide" class="on">Side by side</button><button id="tabAll">All methods</button></div>
+    <div class="players" id="players" style="margin-top:8px"></div>
+    <div class="bar">
+      <button class="act" id="play">Play</button>
+      <input type="range" id="seek" min="0" max="1000" value="0">
+      <span id="time">0.0 s</span>
+      <label>Speed <select id="speed"><option>0.25</option><option>0.5</option><option selected>1</option></select></label>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="card"><h2>Metrics</h2>
+      <table id="metrics"></table>
+      <div class="note"><b>Flicker</b>: frame-to-frame change inside the edited region ÷ change in the ring around it. Close to the original video = natural;
+        much higher = flickering; much lower = frozen. <b>Seam</b>: edge strength at the mask border ÷ nearby (≈1 = no visible halo).
+        <b>LaMa calls</b>: how many times the inpainting network runs — the main compute cost.</div>
+      <div id="extra"></div>
+    </div>
+    <div class="card"><h2>Close-ups</h2><div class="tabs" id="imgTabs"></div><div class="imgs" id="imgs" style="margin-top:8px"></div></div>
+  </section>
+
+  <section class="card"><h2><span class="step">5</span>Re-run processing (optional)</h2>
+    <div class="bar"><button class="act" id="run">Re-run Week 4 on this clip</button><span class="note" id="runNote">Uses the cached SAM 2 masks; about 1–3 minutes.</span></div>
+    <pre id="log" hidden></pre>
+  </section>
+</main>
+<script>
+const METHODS = [
+  { id: "w3_lama", name: "Week 3: per-frame LaMa", desc: "Inpaint every frame independently (baseline: flickers)" },
+  { id: "lama_flow", name: "(2) LaMa + optical-flow smoothing", desc: "Blend each frame with the flow-aligned previous result" },
+  { id: "plate", name: "(1) Background plate", desc: "Inpaint once, reuse in every frame (old mask)" },
+  { id: "w4", name: "Week 4 final", desc: "Stable mask with shadow (3) + background plate (1); per-frame LaMa + flow if the plate cannot be aligned" },
+  { id: "h3", name: "MiniMax H3 (generative video model)", desc: "Reference image + prompt → the whole clip is regenerated (30 → 24 fps); comparison group, run separately" },
+];
+const SHEET_NOTE = "Green ticks: frames where YOLOX found the target. Blue bar: segment that is processed. Frames outside it are left untouched.";
+let clips = [], cur = null, method = "w4", view = "side", replaceOn = true;
+const $ = id => document.getElementById(id);
+const fmt = v => (v === undefined || v === null || v === "") ? "–" : v;
+
+async function load() {
+  clips = await (await fetch("/api/clips")).json();
+  $("clips").innerHTML = clips.map(c => `<button data-id="${c.id}"><b>${c.id}</b><span>${c.scene}</span></button>`).join("");
+  $("clips").querySelectorAll("button").forEach(b => b.onclick = () => select(b.dataset.id));
+  const [hid, hview] = location.hash.slice(1).split("&");  // 网址 #clip_C 或 #clip_C&all 直接打开某段 / 全部方法
+  if (!cur && hview === "all") { view = "all"; $("tabAll").classList.add("on"); $("tabSide").classList.remove("on"); }
+  select(cur ? cur.id : (clips.find(c => c.id === hid) || clips[0]).id);
+}
+
+function select(id) {
+  cur = clips.find(c => c.id === id);
+  $("clips").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.id === id));
+  $("sheet").src = cur.sheet ? `/w4/${cur.sheet}?${Date.now()}` : `/w3/${id}_confirm.png?${Date.now()}`;
+  $("sheetNote").textContent = cur.h3_only ? "No detection or mask: MiniMax H3 gets the reference image (left) and a text prompt, and regenerates every frame." : SHEET_NOTE;
+  if (!available(method)) method = ["w4", ...METHODS.map(m => m.id)].find(available);
+  $("run").disabled = !!cur.h3_only;
+  $("runNote").textContent = cur.h3_only ? "MiniMax H3 results are pre-computed (the model was removed locally for cost)." : "Uses the cached SAM 2 masks; about 1–3 minutes.";
+  if (cur.h3_only) {
+    const h = cur.w4.h3 || {};
+    $("facts").textContent = `${cur.frames} frames @ ${cur.fps} fps (source ${cur.source_fps} fps) · edited region ≈ ${cur.edited_area_pct}% of the frame, ` +
+      `found from the difference to the original · PSNR outside it ${h.psnr_outside} dB, ${h.changed_outside_pct}% of pixels changed`;
+    return finishSelect();
+  }
+  const seg = (cur.segments || []).map(([a, b]) => `${(a / cur.fps).toFixed(1)}–${(b / cur.fps).toFixed(1)} s`).join(", ");
+  const w4 = (cur.w4 && cur.w4.w4) || {};
+  $("facts").textContent = `${cur.frames} frames @ ${cur.fps} fps · target segments: ${seg} · key frames (SAM 2 prompts): ${(cur.keyframes || []).join(", ")}` +
+    (w4.mode ? ` · Week 4 mode: ${w4.mode}${w4.plate_align_err ? ` (plate alignment error ${w4.plate_align_err})` : ""}` : "");
+  return finishSelect();
+}
+
+function finishSelect() {
+  $("objects").innerHTML = cur.objects.map(o => `<label class="obj"><input type="checkbox" data-id="${o.id}" ${o.default ? "checked" : ""} ${o.fixed ? "disabled" : ""}>
+    <span>${o.label}${o.frames ? ` <small>${o.frames} frames masked (detected in ${o.detected})</small>` : ""}<small>${o.source}</small></span></label>`).join("");
+  $("objects").querySelectorAll("input").forEach(i => i.onchange = () => { if (i.dataset.id === "bag") { replaceOn = i.checked; render(); } });
+  replaceOn = !!cur.objects.find(o => o.id === "bag");
+  renderMethods(); render(); renderMetrics(); renderImgs();
+}
+
+function costOf(id) {
+  const w = cur.w4 || {};
+  return { w3_lama: [w.w3_lama_ms_per_frame, "1 per frame"], lama_flow: [w.lama_flow_ms_per_frame, "1 per frame"],
+           plate: [w.plate && w.plate.ms_per_frame, w.plate && w.plate.lama_calls], w4: [w.w4 && w.w4.ms_per_frame, w.w4 && w.w4.lama_calls],
+           h3: [w.h3 && "≈43 GB model", w.h3 && w.h3.lama_calls] }[id] || [];
+}
+
+function renderMethods() {
+  $("methods").innerHTML = METHODS.map(m => { const [ms, calls] = costOf(m.id), ok = available(m.id);
+    return `<label data-id="${m.id}" class="${ok ? "" : "na"}"><input type="radio" name="m" value="${m.id}" ${m.id === method ? "checked" : ""} ${ok ? "" : "disabled"}> <b>${m.name}</b>
+      <small>${m.desc}${ok ? ` · ${fmt(ms)}${m.id === "h3" ? "" : " ms/frame"} · LaMa calls: ${fmt(calls)}` : " · not run on this clip"}</small></label>`; }).join("");
+  $("methods").querySelectorAll("label").forEach(l => { l.classList.toggle("on", l.dataset.id === method);
+    l.onclick = () => { if (!available(l.dataset.id)) return; method = l.dataset.id; renderMethods(); render(); renderMetrics(); }; });
+}
+
+function videoFor(id) {
+  if (id === "h3") return `${cur.id}__book.mp4`;
+  if (cur.id === "clip_C" && replaceOn && (id === "w4" || id === "w3_lama")) return id === "w4" ? "clip_C__w4_book.mp4" : "clip_C__w3_book.mp4";
+  return `${cur.id}__${id}.mp4`;
+}
+const available = id => id === "original" || cur.videos.includes(videoFor(id));
+const nameOf = id => (METHODS.find(m => m.id === id) || { name: "Original" }).name + (cur.id === "clip_C" && replaceOn && (id === "w4" || id === "w3_lama") ? " + book" : "");
+
+function render() {
+  const list = view === "side" ? ["original", method] : ["original", ...METHODS.map(m => m.id).filter(available)];
+  $("players").innerHTML = list.map(id => `<figure><figcaption>${id === "original" ? "Original" : nameOf(id)}</figcaption>
+    <video muted playsinline preload="auto" src="/w4/${videoFor(id)}?${Date.now()}"></video></figure>`).join("");
+  const vs = [...$("players").querySelectorAll("video")];
+  vs.forEach(v => v.playbackRate = +$("speed").value);
+  vs[0].ontimeupdate = () => { $("seek").value = vs[0].duration ? vs[0].currentTime / vs[0].duration * 1000 : 0;
+    $("time").textContent = vs[0].currentTime.toFixed(1) + " s";
+    vs.slice(1).forEach(v => { if (Math.abs(v.currentTime - vs[0].currentTime) > 0.08) v.currentTime = vs[0].currentTime; }); };
+  vs[0].onended = () => { $("play").textContent = "Play"; };
+  $("play").textContent = "Play";
+}
+const vids = () => [...$("players").querySelectorAll("video")];
+$("play").onclick = () => { const vs = vids(); if (vs[0].paused) { vs.forEach(v => v.play()); $("play").textContent = "Pause"; } else { vs.forEach(v => v.pause()); $("play").textContent = "Play"; } };
+$("seek").oninput = () => { const vs = vids(); const t = $("seek").value / 1000 * (vs[0].duration || 0); vs.forEach(v => v.currentTime = t); };
+$("speed").onchange = () => vids().forEach(v => v.playbackRate = +$("speed").value);
+$("tabSide").onclick = () => { view = "side"; $("tabSide").classList.add("on"); $("tabAll").classList.remove("on"); render(); };
+$("tabAll").onclick = () => { view = "all"; $("tabAll").classList.add("on"); $("tabSide").classList.remove("on"); render(); };
+
+function renderMetrics() {
+  const m = cur.metrics || {};
+  const rows = ["original", ...METHODS.map(x => x.id)].filter(id => m[id]);
+  $("metrics").innerHTML = `<tr><th>Method</th><th>Flicker (median)</th><th>Flicker (p90)</th><th>Seam</th><th>ms / frame</th><th>LaMa calls</th></tr>` +
+    rows.map(id => { const r = m[id], [ms, calls] = costOf(id);
+      return `<tr class="${id === method ? "sel" : ""}"><td>${id === "original" ? "Original (reference)" : nameOf(id).replace(" + book", "")}</td>
+        <td>${fmt(r.flicker_med)}</td><td>${fmt(r.flicker_p90)}</td><td>${fmt(r.seam_ratio)}</td><td>${id === "original" ? "" : fmt(ms)}</td><td>${id === "original" ? "" : fmt(calls)}</td></tr>`; }).join("");
+  let extra = "";
+  const po = cur.w4 && cur.w4.per_object;
+  if (po) extra += `<h2 style="margin-top:14px">Per-object vs one mask (cup + bag removed)</h2><table><tr><th>Variant</th><th>Flicker</th><th>Seam: cup</th><th>Seam: bag</th><th>LaMa calls</th><th>Seconds</th></tr>` +
+    Object.entries(po).map(([k, r]) => `<tr><td>${k === "union" ? "One mask for both" : "Each object separately"}</td><td>${r.flicker_med}</td><td>${r.seam_cup}</td><td>${r.seam_bag}</td><td>${r.lama_calls}</td><td>${r.seconds}</td></tr>`).join("") + `</table>`;
+  const bk = cur.w4 && cur.w4.book;
+  if (bk) extra += `<h2 style="margin-top:14px">Bag → black book</h2><table><tr><th>Version</th><th>Flicker (median)</th><th>Flicker (p90)</th></tr>` +
+    Object.entries(bk).map(([k, r]) => `<tr><td>${k === "w3_book" ? "Week 3 (per-frame LaMa base)" : "Week 4 (plate base, per object)"}</td><td>${r.flicker_med}</td><td>${r.flicker_p90}</td></tr>`).join("") + `</table>`;
+  const h3 = cur.w4 && cur.w4.h3;
+  if (h3) extra += `<h2 style="margin-top:14px">MiniMax H3: changes outside the edited region</h2><table><tr><th>PSNR outside (dB)</th><th>Pixels changed outside</th><th>Frame rate</th></tr>` +
+    `<tr><td>${h3.psnr_outside}</td><td>${h3.changed_outside_pct}%</td><td>${cur.source_fps} → ${cur.fps} fps</td></tr></table>` +
+    `<div class="note">The generative model redraws the whole frame, so the desk, cup and background also change slightly (our pipeline keeps every pixel outside the mask).
+      The edited region is estimated from the difference to the original, because H3 does not use a mask.</div>`;
+  $("extra").innerHTML = extra;
+}
+
+function renderImgs() {
+  const imgs = [["Close-ups", `${cur.id}_crops.jpg`], ["Masks (red: Week 3, orange: Week 4)", `${cur.id}_masks.jpg`], ["Flicker over time", `${cur.id}_flicker_w4.png`], ["Background plate", `${cur.id}_plate.jpg`]];
+  if (cur.id === "clip_C") imgs.splice(1, 0, ["Per object vs one mask", "clip_C_per_object_crops.jpg"]);
+  if (cur.h3_only) imgs.splice(0, 4, ["Close-ups (original | H3 | edited region)", `${cur.id}_crops.jpg`],
+    ["Reference image", `${cur.id}_masks.jpg`], ["Flicker over time", `${cur.id}_flicker_h3.png`]);
+  $("imgTabs").innerHTML = imgs.map(([t], i) => `<button data-i="${i}" class="${i ? "" : "on"}">${t}</button>`).join("");
+  const show = i => { $("imgs").innerHTML = `<img src="/w4/${imgs[i][1]}?${Date.now()}" alt="${imgs[i][0]}">`;
+    $("imgTabs").querySelectorAll("button").forEach(b => b.classList.toggle("on", +b.dataset.i === i)); };
+  $("imgTabs").querySelectorAll("button").forEach(b => b.onclick = () => show(+b.dataset.i));
+  show(0);
+}
+
+$("run").onclick = async () => {
+  const r = await fetch("/api/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clip: cur.id }) });
+  const j = await r.json();
+  if (j.error) { $("runNote").textContent = j.error; return; }
+  $("run").disabled = true; $("log").hidden = false; poll();
+};
+async function poll() {
+  const s = await (await fetch("/api/status")).json();
+  $("log").textContent = s.log.join("\n"); $("log").scrollTop = 1e9;
+  if (s.running) return setTimeout(poll, 1500);
+  $("run").disabled = false;
+  $("runNote").textContent = s.code === 0 ? "Done — results reloaded." : `Finished with exit code ${s.code}.`;
+  await load();
+}
+load();
+</script>
+</body>
+</html>

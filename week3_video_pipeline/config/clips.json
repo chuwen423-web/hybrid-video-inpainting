@@ -1,0 +1,99 @@
+{
+  "_说明": "每段测试视频的编辑任务（来自 test_clips/requirements.txt）：每段都删除纸杯咖啡；clip_C 删除咖啡杯后，再把桌上的纸袋替换成一本黑色的书。target 是要确认的检测类别（COCO 类名）；没检测到时用 manual_box（第 key_frame 帧上的 [x0,y0,x1,y1]）由用户补充。",
+  "source_dir": "../test_clips",
+  "work_size_note": "按原分辨率 720x1280 处理和输出",
+  "dilate_px": 8,
+  "clips": {
+    "clip_A": {
+      "video": "clip_A.mp4",
+      "scene": "固定机位：纸杯 + 纸袋",
+      "remove": {
+        "target": "cup"
+      }
+    },
+    "clip_B": {
+      "video": "clip_B.mp4",
+      "scene": "手持平移 + 推近特写",
+      "remove": {
+        "target": "cup"
+      }
+    },
+    "clip_C": {
+      "video": "clip_C.mp4",
+      "scene": "手拿起杯子再放回、碰到纸袋",
+      "remove": {
+        "target": "cup"
+      },
+      "replace": {
+        "target": "paper bag",
+        "with": "a single closed black hardcover book lying flat on a wooden desk, plain matte black cover, nothing on top of it",
+        "negative": "stack of books, multiple books, two books, colorful, green book, red book, phone, tablet, paper bag, brown paper, text, logo, letters",
+        "seeds": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "book_seed": 2,
+        "note": "第一轮（提示词只写 a black hardcover book）4 个候选都在黑书上多叠了别的书或手机 → 改成单本、上面没东西，并加负向提示词",
+        "choice_note": "第二轮 6 个候选里 0/1/2/3/5 都是单本黑书（4 是打开的书，不符合）；选 seed 2：透视和桌面一致、书页和阴影最自然（选择人：Claude，可改）"
+      },
+      "manual_prompts": [
+        {
+          "obj_id": 2,
+          "name": "paper bag",
+          "frame": 0,
+          "box": [
+            300,
+            630,
+            690,
+            930
+          ],
+          "points": [
+            [
+              480,
+              780
+            ],
+            [
+              600,
+              720
+            ],
+            [
+              180,
+              800
+            ]
+          ],
+          "labels": [
+            1,
+            1,
+            0
+          ],
+          "note": "纸袋不是 COCO 类别，YOLO 检测不到 → 用户补充：第 0 帧上一个框 + 两个正点击（纸袋）+ 一个负点击（杯子）。由 Claude 按 requirements.txt 代为标注"
+        }
+      ],
+      "track_classes": [
+        {
+          "obj_id": 3,
+          "class": "person",
+          "note": "手（YOLO 识别为 person），替换纸袋时让手保持在书的前面"
+        }
+      ]
+    },
+    "clip_D": {
+      "video": "clip_D.mp4",
+      "scene": "从窗外扫过办公室，杯子只在中段出现",
+      "remove": {
+        "target": "cup"
+      }
+    },
+    "clip_E": {
+      "video": "clip_E.mp4",
+      "scene": "户外，绕杯子转一圈并有俯视",
+      "remove": {
+        "target": "cup"
+      }
+    }
+  }
+}

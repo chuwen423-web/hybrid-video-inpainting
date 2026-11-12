@@ -1,0 +1,8 @@
+# GPU 版 PyTorch 要先从 PyTorch 官方源单独装（按自己的 CUDA 版本选）：
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+# 开发时验证过的版本：torch 2.14.1+cu130 / torchvision 0.29.1 / Python 3.14 / RTX 5090 Laptop
+opencv-contrib-python>=4.8   # 不要同时装 opencv-python
+numpy>=1.24
+matplotlib>=3.8
+# SAM 2 要在 torch 装好之后装（Windows 上不编译 CUDA 扩展）：
+#   set SAM2_BUILD_CUDA=0 && pip install --no-build-isolation sam2==1.1.0

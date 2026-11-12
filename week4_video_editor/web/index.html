@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Object Editor</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --ink:#1d2330; --mute:#667085; --line:#e3e6ea; --acc:#0f5c4d; --warn:#b42318; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 "Segoe UI", system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:var(--acc); color:#fff; padding:14px 24px; }
+  header h1 { margin:0; font-size:20px; } header p { margin:2px 0 0; opacity:.85; font-size:13px; }
+  main { max-width:1280px; margin:0 auto; padding:16px; display:grid; gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card h2 { margin:0 0 10px; font-size:15px; color:var(--acc); display:flex; align-items:center; gap:8px; }
+  .step { display:inline-block; width:22px; height:22px; border-radius:50%; background:var(--acc); color:#fff; text-align:center; font-size:12px; line-height:22px; }
+  .dim { opacity:.45; pointer-events:none; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  button { border:1px solid var(--line); background:#fff; border-radius:6px; padding:6px 12px; cursor:pointer; font:inherit; }
+  button.act { background:var(--acc); color:#fff; border-color:var(--acc); }
+  button.on { background:#e6f2ef; border-color:var(--acc); }
+  button:disabled { opacity:.5; cursor:default; }
+  select, input[type=text] { font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; }
+  .bar { height:8px; background:#e9ecef; border-radius:4px; overflow:hidden; flex:1; min-width:200px; }
+  .bar > div { height:100%; background:var(--acc); width:0; transition:width .4s; }
+  .status { color:var(--mute); font-size:13px; }
+  .err { color:var(--warn); font-weight:600; }
+  pre { background:#0f172a; color:#d1e3ff; padding:8px 10px; border-radius:6px; max-height:150px; overflow:auto; font-size:12px; margin:8px 0 0; white-space:pre-wrap; word-break:break-word; }
+  .card { min-width:0; overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:middle; }
+  td img { width:120px; border-radius:4px; display:block; }
+  .asset { display:flex; gap:6px; align-items:center; margin-top:4px; }
+  .asset img { width:56px; height:42px; object-fit:contain; background:#eee; border-radius:4px; }
+  .grid2 { display:grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap:14px; }
+  .canvasWrap { position:relative; }
+  canvas { width:100%; border-radius:6px; background:#000; cursor:crosshair; display:block; }
+  .manual { border:1px solid var(--line); border-radius:8px; padding:8px; margin-top:8px; }
+  .manual.sel { border-color:var(--acc); box-shadow:0 0 0 2px #0f5c4d22; }
+  .players { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:10px; }
+  .players figcaption { font-weight:600; font-size:13px; margin-bottom:4px; }
+  .players figure { margin:0; }
+  video { width:100%; max-height:62vh; background:#000; border-radius:6px; }
+  .note { color:var(--mute); font-size:12px; margin-top:6px; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:10px; background:#eef4f2; font-size:12px; margin-right:4px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Video Object Editor</h1>
+  <p>Upload a video → detect objects → choose what to remove / replace / keep in front → track with SAM 2 → edit. Runs locally on this computer.</p>
+</header>
+<main>
+  <!-- 1 -->
+  <section class="card" id="s1"><h2><span class="step">1</span>Choose a video</h2>
+    <div class="row">
+      <input type="file" id="file" accept="video/*"><button class="act" id="upload">Upload &amp; detect</button>
+      <span class="status">or a test clip:</span><select id="samples"></select><button id="useSample">Use test clip</button>
+    </div>
+    <div class="row" style="margin-top:10px"><div class="bar"><div id="prog"></div></div><span class="status" id="stat">No video yet.</span></div>
+    <pre id="log" hidden></pre>
+  </section>
+
+  <!-- 2 -->
+  <section class="card dim" id="s2"><h2><span class="step">2</span>Choose objects</h2>
+    <div class="grid2">
+      <div>
+        <b>Detected by YOLOX</b> <span class="status">(80 everyday object classes)</span>
+        <table id="classes"></table>
+        <div style="margin-top:12px"><b>Objects the detector missed</b>
+          <div class="note">Add an object, pick a frame on the right, then drag a box around it and / or click on it (+) and on things that are not it (−).</div>
+          <div id="manuals"></div>
+          <button id="addManual" style="margin-top:8px">+ Add an object</button>
+        </div>
+      </div>
+      <div>
+        <div class="row"><span class="status">Frame</span><input type="range" id="fslider" min="0" max="0" value="0" style="flex:1"><span id="fnum" class="status">0</span></div>
+        <div class="canvasWrap" style="margin-top:6px"><canvas id="cv"></canvas></div>
+        <div class="row" style="margin-top:6px">
+          <span class="status">Tool:</span><button id="tBox" class="on">Box</button><button id="tPos">+ click</button><button id="tNeg">− click</button>
+          <button id="tClear">Clear this frame</button><span class="status" id="editing">Select or add an object to annotate.</span>
+        </div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px"><button class="act" id="track">Track objects (SAM 2)</button><span class="status">About 1 minute per 10 s of video.</span></div>
+  </section>
+
+  <!-- 3 -->
+  <section class="card dim" id="s3"><h2><span class="step">3</span>Check the masks</h2>
+    <div class="grid2">
+      <div><video id="maskVid" controls muted playsinline></video></div>
+      <div><div id="objStats"></div>
+        <div class="note">Each colour is one tracked object. If a mask is wrong, go back to step 2, add clicks on the frames where it fails and track again.</div>
+        <div class="row" style="margin-top:12px"><button class="act" id="edit">Apply edits</button><span class="status">Remove: background plate or per-frame LaMa (chosen automatically). Replace: your image follows the object's motion.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section class="card dim" id="s4"><h2><span class="step">4</span>Result</h2>
+    <div class="players"><figure><figcaption>Original</figcaption><video id="vOrig" muted playsinline></video></figure>
+      <figure><figcaption>Edited</figcaption><video id="vRes" muted playsinline></video></figure></div>
+    <div class="row" style="margin-top:8px"><button class="act" id="play">Play</button><input type="range" id="seek" min="0" max="1000" value="0" style="flex:1"><span id="time" class="status">0.0 s</span>
+      <a id="dl" download><button>Download result</button></a><a id="dlc" download><button>Download side-by-side</button></a></div>
+    <div id="resInfo" class="note" style="font-size:13px"></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let job = null, jid = location.hash.slice(1) || null, polling = false;
+let manuals = [], cur = -1, tool = "box", frameIdx = 0, img = new Image(), drag = null;
+const choices = {};  // cls -> {action, asset}
+
+async function api(url, opts) { const r = await fetch(url, opts); const j = await r.json(); if (j.error) throw new Error(j.error); return j; }
+function fail(e) { $("stat").innerHTML = `<span class="err">${e.message || e}</span>`; }
+
+async function init() {
+  const s = await api("/api/samples");
+  $("samples").innerHTML = s.map(x => `<option>${x}</option>`).join("");
+  if (jid) poll();
+}
+$("upload").onclick = async () => {
+  const f = $("file").files[0]; if (!f) return fail("Choose a video file first.");
+  $("stat").textContent = "Uploading…";
+  try { const j = await api("/api/upload", { method: "POST", headers: { "X-Filename": encodeURIComponent(f.name) }, body: f }); start(j.id); } catch (e) { fail(e); }
+};
+$("useSample").onclick = async () => { try { const j = await api("/api/sample", { method: "POST", body: JSON.stringify({ name: $("samples").value }) }); start(j.id); } catch (e) { fail(e); } };
+function start(id) { jid = id; location.hash = id; manuals = []; cur = -1; for (const k in choices) delete choices[k]; poll(); }
+
+async function poll() {
+  if (polling) return; polling = true;
+  try {
+    while (true) {
+      job = await api(`/api/jobs/${jid}`);
+      render();
+      if (!job.busy) break;
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  } catch (e) { fail(e); }
+  polling = false;
+}
+
+function render() {
+  const busy = job.busy;
+  $("prog").style.width = (busy ? job.progress || 3 : 100) + "%";
+  $("stat").innerHTML = job.error ? `<span class="err">${job.error}</span>` :
+    busy ? `Running: ${busy}… ${Math.round(Date.now() / 1000 - job.step_started)} s` :
+    `${job.name} · ${job.frames || "?"} frames · ${job.width || "?"}×${job.height || "?"} @ ${job.fps || "?"} fps · stage: ${job.stage}`;
+  $("log").hidden = !(job.log && job.log.length); $("log").textContent = (job.log || []).join("\n"); $("log").scrollTop = 1e9;
+  ["upload", "useSample", "track", "edit"].forEach(id => $(id).disabled = !!busy);
+  const st = job.stage;
+  $("s2").classList.toggle("dim", !["detected", "tracked", "edited"].includes(st));
+  $("s3").classList.toggle("dim", !["tracked", "edited"].includes(st));
+  $("s4").classList.toggle("dim", st !== "edited");
+  if (job.classes && $("classes").dataset.job !== jid) { $("classes").dataset.job = jid; renderClasses(); setupFrames(); }
+  if (["tracked", "edited"].includes(st) && !busy) renderMasks();
+  if (st === "edited" && !busy) renderResult();
+}
+
+const sec = f => (f / job.fps).toFixed(1);
+function renderClasses() {
+  if (!job.classes.length) { $("classes").innerHTML = `<tr><td class="status">Nothing detected — add objects by hand below.</td></tr>`; return; }
+  $("classes").innerHTML = `<tr><th></th><th>Object</th><th>Seen</th><th>Action</th></tr>` + job.classes.map((c, i) => {
+    const ch = choices[c.cls] || {};
+    return `<tr><td><img src="/api/jobs/${jid}/file/${c.thumb}"></td>
+      <td><b>${c.cls}</b><br><span class="status">${c.frames} frames · ${c.segments.map(([a, b]) => `${sec(a)}–${sec(b)} s`).join(", ")}</span></td>
+      <td>${Math.round(100 * c.frames / job.frames)}%</td>
+      <td><select data-cls="${c.cls}">${["", "remove", "replace", "keep"].map(a => `<option value="${a}" ${ch.action === a ? "selected" : ""}>${a ? (a === "keep" ? "keep in front" : a) : "—"}</option>`).join("")}</select>
+        <div class="asset" data-asset="${c.cls}" ${ch.action === "replace" ? "" : "hidden"}>${assetUI(ch.asset)}</div></td></tr>`;
+  }).join("");
+  $("classes").querySelectorAll("select").forEach(s => s.onchange = () => { const c = s.dataset.cls; choices[c] = { ...(choices[c] || {}), action: s.value }; renderClasses(); });
+  bindAssets($("classes"), cls => choices[cls] || (choices[cls] = {}), () => renderClasses());
+}
+function assetUI(a) {
+  return (a ? `<img src="/api/jobs/${jid}/asset/${a}">` : "") +
+    `<span class="status">${a ? a : "replacement image:"}</span><button data-up>Upload…</button><button data-sample>Sample: black book</button>`;
+}
+function bindAssets(root, getter, rerender) {
+  root.querySelectorAll(".asset").forEach(d => {
+    const key = d.dataset.asset;
+    d.querySelector("[data-sample]").onclick = async () => { try { const j = await api(`/api/jobs/${jid}/sample_asset`, { method: "POST" }); getter(key).asset = j.asset; rerender(); } catch (e) { fail(e); } };
+    d.querySelector("[data-up]").onclick = () => { const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*";
+      inp.onchange = async () => { try { const j = await api(`/api/jobs/${jid}/asset`, { method: "POST", body: inp.files[0] }); getter(key).asset = j.asset; rerender(); } catch (e) { fail(e); } }; inp.click(); };
+  });
+}
+
+// ---- manual objects + canvas ----
+$("addManual").onclick = () => { manuals.push({ name: `object ${manuals.length + 1}`, action: "remove", prompts: {} }); cur = manuals.length - 1; renderManuals(); draw(); };
+function renderManuals() {
+  $("manuals").innerHTML = manuals.map((m, i) => `<div class="manual ${i === cur ? "sel" : ""}" data-i="${i}">
+    <div class="row"><input type="radio" name="cur" ${i === cur ? "checked" : ""}><input type="text" value="${m.name}" data-name style="width:140px">
+      <select data-act>${["remove", "replace", "keep"].map(a => `<option value="${a}" ${m.action === a ? "selected" : ""}>${a === "keep" ? "keep in front" : a}</option>`).join("")}</select>
+      <span class="status">${Object.keys(m.prompts).length ? "annotated on frame " + Object.keys(m.prompts).join(", ") : "not annotated yet"}</span>
+      <button data-del>Remove</button></div>
+    <div class="asset" data-asset="${i}" ${m.action === "replace" ? "" : "hidden"}>${assetUI(m.asset)}</div></div>`).join("");
+  $("manuals").querySelectorAll(".manual").forEach(d => {
+    const i = +d.dataset.i;
+    d.querySelector("input[type=radio]").onclick = () => { cur = i; renderManuals(); draw(); };
+    d.querySelector("[data-name]").oninput = e => manuals[i].name = e.target.value;
+    d.querySelector("[data-act]").onchange = e => { manuals[i].action = e.target.value; renderManuals(); };
+    d.querySelector("[data-del]").onclick = () => { manuals.splice(i, 1); cur = Math.min(cur, manuals.length - 1); renderManuals(); draw(); };
+  });
+  bindAssets($("manuals"), i => manuals[+i], () => renderManuals());
+  $("editing").textContent = cur >= 0 ? `Annotating: ${manuals[cur].name}` : "Select or add an object to annotate.";
+}
+function setupFrames() { $("fslider").max = job.frames - 1; $("fslider").value = 0; loadFrame(0); }
+$("fslider").oninput = () => loadFrame(+$("fslider").value);
+function loadFrame(i) { frameIdx = i; $("fnum").textContent = `${i} (${sec(i)} s)`; img.onload = draw; img.src = `/api/jobs/${jid}/frame/${i}`; }
+[["tBox", "box"], ["tPos", "pos"], ["tNeg", "neg"]].forEach(([id, t]) => $(id).onclick = () => { tool = t; ["tBox", "tPos", "tNeg"].forEach(x => $(x).classList.toggle("on", x === id)); });
+$("tClear").onclick = () => { if (cur >= 0) { delete manuals[cur].prompts[frameIdx]; renderManuals(); draw(); } };
+const cv = $("cv"), ctx = cv.getContext("2d");
+function toImg(e) { const r = cv.getBoundingClientRect(); return [Math.round((e.clientX - r.left) / r.width * img.naturalWidth), Math.round((e.clientY - r.top) / r.height * img.naturalHeight)]; }
+function draw() {
+  if (!img.naturalWidth) return;
+  cv.width = img.naturalWidth; cv.height = img.naturalHeight; ctx.drawImage(img, 0, 0);
+  const lw = Math.max(2, cv.width / 300);
+  manuals.forEach((m, i) => { const p = m.prompts[frameIdx]; if (!p) return;
+    ctx.lineWidth = lw; ctx.strokeStyle = i === cur ? "#ffb000" : "#88a";
+    if (p.box) ctx.strokeRect(p.box[0], p.box[1], p.box[2] - p.box[0], p.box[3] - p.box[1]);
+    p.points.forEach(([x, y], k) => { ctx.beginPath(); ctx.arc(x, y, lw * 4, 0, 7); ctx.fillStyle = p.labels[k] ? "#00d060" : "#ff3030"; ctx.fill(); });
+  });
+  if (drag) { ctx.strokeStyle = "#ffb000"; ctx.lineWidth = lw; ctx.strokeRect(drag[0], drag[1], drag[2] - drag[0], drag[3] - drag[1]); }
+}
+const promptOf = () => manuals[cur].prompts[frameIdx] || (manuals[cur].prompts[frameIdx] = { box: null, points: [], labels: [] });
+cv.onmousedown = e => { if (cur < 0) return; const [x, y] = toImg(e);
+  if (tool === "box") drag = [x, y, x, y];
+  else { const p = promptOf(); p.points.push([x, y]); p.labels.push(tool === "pos" ? 1 : 0); renderManuals(); draw(); } };
+cv.onmousemove = e => { if (drag) { const [x, y] = toImg(e); drag[2] = x; drag[3] = y; draw(); } };
+window.onmouseup = () => { if (!drag) return; const [a, b, c, d] = drag; drag = null;
+  if (Math.abs(c - a) > 5 && Math.abs(d - b) > 5) { promptOf().box = [Math.min(a, c), Math.min(b, d), Math.max(a, c), Math.max(b, d)]; renderManuals(); } draw(); };
+
+$("track").onclick = async () => {
+  const objects = [];
+  for (const c of job.classes || []) { const ch = choices[c.cls]; if (ch && ch.action) objects.push({ source: "class", cls: c.cls, name: c.cls, action: ch.action, asset: ch.asset }); }
+  for (const m of manuals) {
+    const prompts = Object.entries(m.prompts).map(([f, p]) => ({ frame: +f, box: p.box, points: p.points, labels: p.labels })).filter(p => p.box || p.points.length);
+    if (!prompts.length) return fail(`"${m.name}" has no box or click yet.`);
+    objects.push({ source: "manual", name: m.name, action: m.action, asset: m.asset, prompts });
+  }
+  try { await api(`/api/jobs/${jid}/track`, { method: "POST", body: JSON.stringify({ objects }) }); poll(); } catch (e) { fail(e); }
+};
+
+// ---- 3 / 4 ----
+let maskShown = null, resShown = null;
+function renderMasks() {
+  const key = jid + job.log.length;
+  if (maskShown === key) return; maskShown = key;
+  $("maskVid").src = `/api/jobs/${jid}/file/masks.mp4?${Date.now()}`;
+  const colors = ["red", "orange", "blue", "green", "purple", "cyan"];
+  $("objStats").innerHTML = (job.objects || []).map(o => `<div><span class="pill" style="background:${colors[(o.id - 1) % 6]};color:#fff">${o.id}</span>
+    <b>${o.name}</b> — ${o.action === "keep" ? "keep in front" : o.action}${o.asset ? ` (${o.asset})` : ""} · mask in ${o.masked_frames} of ${job.frames} frames</div>`).join("");
+}
+$("edit").onclick = async () => { try { await api(`/api/jobs/${jid}/edit`, { method: "POST" }); poll(); } catch (e) { fail(e); } };
+function renderResult() {
+  const key = jid + job.log.length;
+  if (resShown === key) return; resShown = key;
+  $("vOrig").src = `/api/jobs/${jid}/file/original.mp4?${Date.now()}`; $("vRes").src = `/api/jobs/${jid}/file/result.mp4?${Date.now()}`;
+  $("dl").href = `/api/jobs/${jid}/download/result.mp4`; $("dlc").href = `/api/jobs/${jid}/download/compare.mp4`;
+  const r = job.result || {}, m = r.metrics || {};
+  $("resInfo").innerHTML = `Removal method: <b>${r.mode || "–"}</b> · processing time ${r.seconds || "–"} s` +
+    (m.original ? ` · flicker of the edited region: original ${m.original.flicker_med} → result ${m.result.flicker_med} (close to or below the original = no flicker) · seam ${m.result.seam_ratio} (≈1 = no visible halo)` : "");
+  $("play").textContent = "Play";
+}
+const vids = () => [$("vOrig"), $("vRes")];
+$("play").onclick = () => { const [a, b] = vids(); if (a.paused) { a.play(); b.play(); $("play").textContent = "Pause"; } else { a.pause(); b.pause(); $("play").textContent = "Play"; } };
+$("vOrig").ontimeupdate = () => { const [a, b] = vids(); $("seek").value = a.duration ? a.currentTime / a.duration * 1000 : 0; $("time").textContent = a.currentTime.toFixed(1) + " s";
+  if (Math.abs(b.currentTime - a.currentTime) > 0.08) b.currentTime = a.currentTime; };
+$("vOrig").onended = () => $("play").textContent = "Play";
+$("seek").oninput = () => { const t = $("seek").value / 1000 * ($("vOrig").duration || 0); vids().forEach(v => v.currentTime = t); };
+init();
+</script>
+</body>
+</html>

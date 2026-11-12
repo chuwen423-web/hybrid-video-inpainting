@@ -1,0 +1,27 @@
+{
+  "_说明": "targets 引用第一周 cases.json 里的图片和多边形（未外扩的多边形 = 真值 mask）。make_clips.py 对每个 target × condition 生成一个带真值的合成短片。real_videos 是没有真值的真实视频，只做定性观察。",
+  "n_frames": 48,
+  "fps": 12,
+  "targets": {
+    "spoon": {"week1_case": "coffee_remove_spoon", "label": "反光金属勺，勺柄贴着杯壁"},
+    "tower": {"week1_case": "rocket_remove_tower", "label": "细长镂空发射塔，背景是天空渐变"}
+  },
+  "conditions": {
+    "static":    "静止镜头（静态图复制成的视频 + 传感器噪声 + JPEG 压缩）",
+    "pan":       "横向平移 + 手持抖动",
+    "zoom":      "以目标为中心推近再拉远（尺度 1.0 → 1.9 → 1.0）",
+    "blur":      "平移 + 随时间变化的运动模糊（4–18 px）",
+    "occlusion": "平移 + 一根带纹理的竖条从目标前方扫过，中间约 9 帧完全挡住目标"
+  },
+  "sam2_models": {
+    "tiny":  {"config": "configs/sam2.1/sam2.1_hiera_t.yaml", "checkpoint": "checkpoints/sam2.1_hiera_tiny.pt"},
+    "large": {"config": "configs/sam2.1/sam2.1_hiera_l.yaml", "checkpoint": "checkpoints/sam2.1_hiera_large.pt"}
+  },
+  "prompts": ["point", "box", "box+point", "box+2points"],
+  "real_videos": [
+    {"id": "real_bedroom", "video": "data/real/bedroom.mp4", "max_frames": 60,
+     "points": [[210, 350], [225, 270], [260, 170]], "labels": [1, 1, 1],
+     "extra_prompts": {"1click": {"points": [[210, 350]], "labels": [1]}},
+     "note": "SAM 2 官方示例视频，目标是左边的男孩。主提示 = 短裤 + 上衣 + 头 三个点；1click 只点短裤，用来观察“部件 vs 整体”的歧义。没有真值，只看叠加视频和面积曲线。"}
+  ]
+}

@@ -53,10 +53,14 @@
   nav a { color:#fff; text-decoration:none; padding:5px 14px; border-radius:6px 6px 0 0; background:#ffffff22; font-size:13px; }
   nav a.on { background:var(--bg); color:var(--acc); font-weight:600; }
   body.show .trackOnly, body:not(.show) .showOnly { display:none !important; }
-  .nm { cursor:text; border-bottom:1px dashed transparent; }
-  .nm:hover { border-bottom-color:var(--mute); }
-  .nm::after { content:" \270E"; font-weight:400; font-size:12px; color:var(--mute); opacity:0; }
-  .nm:hover::after { opacity:1; }
+  .nm.edit { cursor:text; border-bottom:1px dashed transparent; }
+  .nm.edit:hover { border-bottom-color:var(--mute); }
+  .nm.edit::after { content:" \270E"; font-weight:400; font-size:12px; color:var(--mute); opacity:0; }
+  .nm.edit:hover::after { opacity:1; }
+  .manual { margin-top:14px; padding-top:10px; border-top:1px solid var(--line, #ddd); }
+  #cv { display:block; width:auto; max-width:100%; max-height:46vh; margin:6px auto 0; border-radius:6px; background:#000; cursor:crosshair; }
+  .rename { margin-top:12px; padding-top:10px; border-top:1px solid var(--line, #ddd); }
+  #relabel.need { border-color:var(--acc); color:var(--acc); font-weight:600; }
   input.nmEdit { font:inherit; font-weight:600; width:100%; max-width:180px; padding:2px 6px; border:1px solid var(--acc); border-radius:4px; }
 </style>
 </head>
@@ -80,11 +84,22 @@
   <section class="card dim" id="s2"><h2><span class="step">2</span>Detected object instances <span class="status" style="font-weight:400">(YOLOX + IoU linking — each instance has its own number, even several objects of the same class)</span></h2>
     <div class="grid2">
       <div><video id="boxVid" controls muted playsinline></video>
-        <div class="note">Boxes only, from the detector. A number can break when the detector misses an object for a while or the object leaves the frame — SAM 2 in step 3 joins those pieces again.</div></div>
+        <div class="note">Boxes only, from the detector. A number can break when the detector misses an object for a while or the object leaves the frame — SAM 2 in step 3 joins those pieces again.</div>
+        <div class="manual trackOnly">
+          <b>Add an object the detector missed</b> <span class="status">(YOLOX knows only the 80 COCO classes — e.g. playing cards or a paper bag are missing)</span>
+          <div class="row" style="margin-top:6px"><span class="status">Frame</span><input type="range" id="fslider" min="0" max="0" value="0" style="flex:1"><span id="fnum" class="status">0</span></div>
+          <canvas id="cv"></canvas>
+          <div class="row" style="margin-top:6px"><span class="status">Pick a frame where the object is clear, drag a box around it, name it (English) and</span>
+            <input type="text" id="mName" placeholder="e.g. playing card" maxlength="40" style="width:150px"><button id="mAdd">Add object</button><span class="status" id="mInfo"></span></div>
+        </div></div>
       <div>
         <div class="row chips trackOnly"><span class="status">Select:</span><button class="sm" id="selAll">All</button><button class="sm" id="selNone">None</button><span id="clsChips"></span></div>
         <div class="scroll" style="max-height:56vh;margin-top:6px"><table id="inst"></table></div>
         <div class="row" style="margin-top:10px"><button class="act trackOnly" id="track">Track selected (SAM 2)</button><span class="status" id="selInfo"></span></div>
+        <div class="rename trackOnly">
+          <div class="note">Click an object's name to rename it (<b>English only</b>: letters, digits, spaces and . _ - ( ) ' &amp; + /). The lists change at once; the names inside the videos change only after you redraw them.</div>
+          <div class="row" style="margin-top:6px"><button id="relabel">Redraw videos with new names</button><span class="status" id="relabelInfo"></span></div>
+        </div>
       </div>
     </div>
   </section>
@@ -96,9 +111,9 @@
         <div class="row" style="margin-top:8px">
           <a id="dl1" download><button class="sm">Video</button></a><a id="dl2" download><button class="sm">Side-by-side</button></a>
           <a id="dl3" download><button class="sm">Tracks (CSV)</button></a><a id="dl4" download><button class="sm">Masks (PNG zip)</button></a></div>
-        <div class="note">CSV: one row per object per frame — frame, time, id, class, box (x, y, w, h), mask area. Masks: one PNG per frame, pixel value = object number (0 = background).</div></div>
+        <div class="note">CSV: one row per object per frame — frame, time, id, class (YOLOX), name (as shown), box (x, y, w, h), mask area. Masks: one PNG per frame, pixel value = object number (0 = background).</div></div>
       <div>
-        <div class="legend status"><span><b></b>SAM 2 mask</span><span><b style="height:4px;opacity:.55"></b>YOLOX box</span><span>click a timeline to jump there</span></div>
+        <div class="legend status"><span><b></b>SAM 2 mask</span><span><b style="height:4px;opacity:.55"></b>YOLOX box</span><span>click a timeline to jump there</span><span class="trackOnly">names are edited in step 2</span></div>
         <div class="scroll" style="max-height:62vh;margin-top:6px"><table id="res"></table></div>
       </div>
     </div>
@@ -109,7 +124,8 @@ const $ = id => document.getElementById(id);
 const MAX_OBJ = 16;
 const SHOW = location.hash.startsWith("#show");  // "Test results" 标签页：只展示保存好的最终测试结果
 let job = null, jid = SHOW ? null : location.hash.slice(1) || null, polling = false;
-let sel = new Set(), shownDet = null, shownRes = null;
+let sel = new Set(), shownDet = null, shownRes = null, lastBusy = null, loadedJob = null;
+const seenManual = new Set();  // 已经自动勾选过的手动物体（用户取消勾选后不再自动勾上）
 
 async function api(url, opts) { const r = await fetch(url, opts); const j = await r.json(); if (j.error) throw new Error(j.error); return j; }
 function fail(e) { $("stat").innerHTML = `<span class="err">${e.message || e}</span>`; }
@@ -168,10 +184,16 @@ function render() {
     busy ? `Running: ${busy}… ${Math.round(Date.now() / 1000 - job.step_started)} s` :
     `${job.name} · ${job.frames || "?"} frames · ${job.width || "?"}×${job.height || "?"} @ ${job.fps || "?"} fps · stage: ${job.stage}`;
   $("log").hidden = !(job.log && job.log.length); $("log").textContent = (job.log || []).join("\n"); $("log").scrollTop = 1e9;
-  ["upload", "useSample", "track"].forEach(id => $(id).disabled = !!busy);
+  ["upload", "useSample", "track", "mAdd"].forEach(id => $(id).disabled = !!busy);
+  if (["rename", "track"].includes(lastBusy) && !busy) {  // 重画或追踪结束：检测预览视频可能被按新名字重写过，重新加载（否则播放器读到一半的旧文件会卡住）
+    $("boxVid").src = file("boxes.mp4") + "?" + Date.now();
+    if (lastBusy === "rename") shownRes = null;
+  }
+  lastBusy = busy;
+  renderRelabel();
   $("s2").classList.toggle("dim", !["detected", "tracked"].includes(job.stage));
   $("s3").classList.toggle("dim", job.stage !== "tracked" || !!busy);
-  if (job.objects && shownDet !== jid) { shownDet = jid; initDetections(); }
+  if (job.objects && shownDet !== jid + "/" + job.objects.length) { shownDet = jid + "/" + job.objects.length; initDetections(); }
   if (job.stage === "tracked" && !busy && shownRes !== jid + job.log.length) { shownRes = jid + job.log.length; renderResult(); }
 }
 
@@ -181,13 +203,19 @@ function timeline(segs, col, cls = "", extra = "") {
   return segs.map(([a, b]) => `<span class="${cls}" style="left:${100 * a / n}%;width:${Math.max(0.4, 100 * (b - a + 1) / n)}%;background:${col}"></span>`).join("") + extra;
 }
 function initDetections() {
-  $("boxVid").src = file("boxes.mp4") + "?" + Date.now();
   const objs = job.objects;
-  if (job.result && job.result.tracks) {  // 已经追踪过：恢复上次的选择（合并前的编号）
-    job.result.tracks.forEach(t => { sel.add(t.id); (t.merged_from || []).forEach(i => sel.add(i)); });
-  } else {
-    [...objs].sort((a, b) => b.yolo_frames - a.yolo_frames).slice(0, MAX_OBJ).forEach(o => sel.add(o.id));
+  if (loadedJob !== jid) {  // 换了任务：加载视频和框选画面，按默认规则勾选；同一任务里新加物体时只刷新列表
+    loadedJob = jid;
+    $("boxVid").src = file("boxes.mp4") + "?" + Date.now();
+    if (!SHOW) { $("fslider").max = job.frames - 1; $("fslider").value = 0; loadFrame(0); }
+    if (job.result && job.result.tracks) {  // 已经追踪过：恢复上次的选择（合并前的编号）
+      job.result.tracks.forEach(t => { sel.add(t.id); (t.merged_from || []).forEach(i => sel.add(i)); });
+    } else {
+      [...objs].filter(o => !o.manual).sort((a, b) => b.yolo_frames - a.yolo_frames).slice(0, MAX_OBJ).forEach(o => sel.add(o.id));
+    }
   }
+  objs.filter(o => o.manual && !seenManual.has(o.id)).forEach(o => { seenManual.add(o.id); sel.add(o.id); });  // 手动加的物体默认勾选
+  [...sel].forEach(i => { if (!objs.some(o => o.id === i)) sel.delete(i); });  // 删掉的手动物体
   const classes = [...new Set(objs.map(o => o.cls))];
   $("clsChips").innerHTML = classes.map(c => `<button class="sm" data-c="${c}">${c} (${objs.filter(o => o.cls === c).length})</button>`).join("");
   $("clsChips").querySelectorAll("button").forEach(b => b.onclick = () => {  // 点一下：只选这一类 / 再点：这一类全部取消
@@ -203,11 +231,15 @@ function renderInst() {
   $("inst").innerHTML = `<tr><th></th><th>#</th><th></th><th>Object</th><th>Seen by YOLOX</th><th style="width:34%">Timeline</th></tr>` + objs.map(o =>
     `<tr class="${sel.has(o.id) ? "" : "off"}" data-id="${o.id}"><td><input type="checkbox" ${sel.has(o.id) ? "checked" : ""} ${SHOW ? "disabled" : ""}></td>
       <td><span class="tag" style="background:${o.color};color:${ink(o.color)}">#${o.id}</span></td><td><img src="${file(o.thumb)}"></td>
-      <td>${nameCell(o.id, o.cls, `score ${o.best_score}`)}</td>
-      <td>${o.yolo_frames} frames<br><span class="status">${o.yolo_segments.map(([a, b]) => `${sec(a)}–${sec(b)} s`).join(", ")}</span></td>
+      <td>${nameCell(o.id, o.cls, o.manual ? "added by hand" : `score ${o.best_score}`, !SHOW)}</td>
+      <td>${o.manual ? `– <br><span class="status">boxed at ${sec(o.prompt_frame)} s</span>${SHOW ? "" : ` <button class="sm" data-del="${o.id}">remove</button>`}` :
+        `${o.yolo_frames} frames<br><span class="status">${o.yolo_segments.map(([a, b]) => `${sec(a)}–${sec(b)} s`).join(", ")}</span>`}</td>
       <td><div class="tl" data-seek="boxVid">${timeline(o.yolo_segments, o.color)}</div></td></tr>`).join("");
   $("inst").querySelectorAll("tr[data-id]").forEach(tr => tr.querySelector("input").onchange = e => {
     const id = +tr.dataset.id; e.target.checked ? sel.add(id) : sel.delete(id); renderInst(); });
+  $("inst").querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+    try { await api(`/api/jobs/${jid}/manual_del`, { method: "POST", body: JSON.stringify({ id: +b.dataset.del }) }); sel.delete(+b.dataset.del); poll(); } catch (e) { fail(e); }
+  });
   bindSeek($("inst"));
   const k = sel.size;
   if (SHOW) { $("selInfo").textContent = `${k} of ${objs.length} instances were sent to SAM 2 in this run (ticked).`; return; }
@@ -215,7 +247,47 @@ function renderInst() {
     `${k} selected · about ${Math.max(1, Math.round(job.frames * (0.15 + 0.06 * k) / 60))} min on this computer`;
   $("track").disabled = !!job.busy || !k || k > MAX_OBJ;
 }
-$("selAll").onclick = () => { job.objects.forEach(o => sel.add(o.id)); renderInst(); };
+// ---------- 手动框选检测器不认识的物体 ----------
+const cv = $("cv"), ctx = cv.getContext("2d"), img = new Image();
+let frameIdx = 0, box = null, drag = null;
+$("fslider").oninput = () => loadFrame(+$("fslider").value);
+function loadFrame(i) { frameIdx = i; box = null; $("mInfo").textContent = ""; $("fnum").textContent = `${i} (${sec(i)} s)`; img.onload = drawBox; img.src = `/api/jobs/${jid}/frame/${i}`; }
+function toImg(e) {
+  const r = cv.getBoundingClientRect();
+  const cl = (v, m) => Math.max(0, Math.min(m, v));
+  return [cl(Math.round((e.clientX - r.left) / r.width * img.naturalWidth), img.naturalWidth), cl(Math.round((e.clientY - r.top) / r.height * img.naturalHeight), img.naturalHeight)];
+}
+function drawBox() {
+  if (!img.naturalWidth) return;
+  cv.width = img.naturalWidth; cv.height = img.naturalHeight; ctx.drawImage(img, 0, 0);
+  const b = drag || box; if (!b) return;
+  ctx.lineWidth = Math.max(2, cv.width / 250); ctx.strokeStyle = "#ffb000";
+  ctx.strokeRect(Math.min(b[0], b[2]), Math.min(b[1], b[3]), Math.abs(b[2] - b[0]), Math.abs(b[3] - b[1]));
+}
+cv.onmousedown = e => { if (!img.naturalWidth) return; const [x, y] = toImg(e); drag = [x, y, x, y]; };
+cv.onmousemove = e => { if (drag) { const [x, y] = toImg(e); drag[2] = x; drag[3] = y; drawBox(); } };
+window.addEventListener("mouseup", () => {
+  if (!drag) return;
+  const [a, b, c, d] = drag; drag = null;
+  box = Math.abs(c - a) > 8 && Math.abs(d - b) > 8 ? [Math.min(a, c), Math.min(b, d), Math.max(a, c), Math.max(b, d)] : null;
+  $("mInfo").textContent = box ? `box ${box.join(", ")}` : ""; drawBox();
+});
+$("mAdd").onclick = async () => {
+  const name = $("mName").value.trim().replace(/\s+/g, " ");
+  if (!box) { $("mInfo").innerHTML = `<span class="err">Drag a box around the object first.</span>`; return; }
+  if (!name) { $("mInfo").innerHTML = `<span class="err">Give the object a name.</span>`; return; }
+  if (!NAME_OK.test(name)) { $("mInfo").innerHTML = `<span class="err">English only: letters, digits, spaces and . _ - ( ) ' &amp; + /</span>`; return; }
+  try {
+    const r = await api(`/api/jobs/${jid}/manual`, { method: "POST", body: JSON.stringify({ name, frame: frameIdx, box }) });
+    box = null; drawBox(); $("mName").value = "";
+    $("mInfo").textContent = `added as #${r.id} — it is ticked in the list; click Track to follow it with SAM 2`;
+    poll();
+  } catch (e) { fail(e); }
+};
+$("relabel").onclick = async () => {
+  try { await api(`/api/jobs/${jid}/relabel`, { method: "POST" }); poll(); } catch (e) { fail(e); }
+};
+$("selAll").onclick =() => { job.objects.forEach(o => sel.add(o.id)); renderInst(); };
 $("selNone").onclick = () => { sel.clear(); renderInst(); };
 $("track").onclick = async () => {
   try { await api(`/api/jobs/${jid}/track`, { method: "POST", body: JSON.stringify({ ids: [...sel] }) }); shownRes = null; poll(); } catch (e) { fail(e); }
@@ -236,7 +308,7 @@ function renderResTable() {  // 只重画表格（改名后调用，不重新加
   const tr = job.result.tracks;
   $("res").innerHTML = `<tr><th>#</th><th></th><th>Object</th><th>YOLOX</th><th>SAM 2</th><th>Size</th><th style="width:36%">Timeline</th></tr>` + tr.map(t =>
     `<tr><td><span class="tag" style="background:${t.color};color:${ink(t.color)}">#${t.id}</span></td><td><img src="${file(t.thumb)}"></td>
-      <td>${nameCell(t.id, t.cls, t.merged_from.length ? `joined ${t.merged_from.map(i => "#" + i).join(", ")}` : "")}</td>
+      <td>${nameCell(t.id, t.cls, t.merged_from.length ? `joined ${t.merged_from.map(i => "#" + i).join(", ")}` : "", false)}</td>
       <td>${t.yolo_frames}</td><td><b>${t.sam_frames}</b><br><span class="status">${t.sam_segments.map(([a, b]) => `${sec(a)}–${sec(b)}`).join(", ")} s</span></td>
       <td>${t.mean_area_pct}%</td>
       <td><div class="tl big" data-seek="trkVid">${timeline(t.sam_segments, t.color) + timeline(t.yolo_segments, "#1d2330", "yolo")}<i></i></div></td></tr>`).join("");
@@ -256,29 +328,46 @@ function nameOf(id, cls) {  // 先看整个物体的名字，再看它的各个�
   const hit = ids.find(i => L[i] != null);
   return hit != null ? L[hit] : cls;
 }
-function nameCell(id, cls, sub) {
+function nameCell(id, cls, sub, editable) {  // 只有第 2 步可以改名；第 3 步只显示
   const n = nameOf(id, cls), renamed = n !== cls;
   const info = [renamed ? `YOLOX: ${esc(cls)}` : "", esc(sub || "")].filter(Boolean).join(" · ");
-  return `<b class="nm" data-nid="${rootOf(id)}" data-cls="${esc(cls)}" title="Click to rename this object">${esc(n)}</b>` +
+  return `<b class="nm${editable ? " edit" : ""}" data-nid="${rootOf(id)}" data-cls="${esc(cls)}"${editable ? ` title="Click to rename this object (English only)"` : ""}>${esc(n)}</b>` +
     (info ? `<br><span class="status">${info}</span>` : "");
 }
+const NAME_OK = /^[A-Za-z0-9 ._()'&+\/-]*$/;  // 和后台一样：视频里的标签用 OpenCV 画，只能显示英文
+const sameLabels = (a, b) => { a = a || {}; b = b || {}; const k = Object.keys(a); return k.length === Object.keys(b).length && k.every(i => a[i] === b[i]); };
+function renderRelabel() {  // 名字改了但视频还没重画：按钮高亮
+  if (SHOW || !job) return;
+  const pending = !sameLabels(job.labels, job.labels_drawn);
+  $("relabel").disabled = !!job.busy || !["detected", "tracked"].includes(job.stage);
+  $("relabel").classList.toggle("need", pending && !job.busy);
+  $("relabelInfo").innerHTML = job.busy === "rename" ? "Redrawing the videos…" :
+    pending ? `<span class="err">Names changed — the videos still show the old names.</span>` : "Videos show the current names.";
+}
 document.addEventListener("click", e => {
-  const b = e.target.closest(".nm");
+  const b = e.target.closest(".nm.edit");
   if (!b || job.busy) return;
   const id = +b.dataset.nid, old = nameOf(id, b.dataset.cls);
   const inp = document.createElement("input");
   inp.type = "text"; inp.value = old; inp.maxLength = 40; inp.className = "nmEdit"; inp.placeholder = b.dataset.cls;
   b.replaceWith(inp); inp.focus(); inp.select();
   let done = false;
+  inp.oninput = () => { inp.style.borderColor = NAME_OK.test(inp.value) ? "" : "#c0392b"; inp.title = NAME_OK.test(inp.value) ? "" : "English only"; };
   const finish = async save => {
     if (done) return; done = true;
-    const name = inp.value.trim();
+    const name = inp.value.trim().replace(/\s+/g, " ");
     if (save && name !== old) {
+      if (!NAME_OK.test(name)) {
+        $("relabelInfo").innerHTML = `<span class="err">Not saved: names can use English letters, digits, spaces and . _ - ( ) ' &amp; + / only.</span>`;
+        renderInst(); if (job.result && job.result.tracks) renderResTable();
+        return;
+      }
       const t = ((job.result && job.result.tracks) || []).find(t => t.id === id);
       try { job.labels = (await api(`/api/jobs/${jid}/label`, { method: "POST", body: JSON.stringify({ id, name, same: (t && t.merged_from) || [] }) })).labels; }
       catch (err) { fail(err); }
     }
     renderInst(); if (job.result && job.result.tracks) renderResTable();
+    renderRelabel();
   };
   inp.onkeydown = ev => { if (ev.key === "Enter") finish(true); else if (ev.key === "Escape") finish(false); };
   inp.onblur = () => finish(true);

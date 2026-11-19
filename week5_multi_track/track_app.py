@@ -177,17 +177,85 @@ def prepare(jid, src):
                      "prompt_frame": int(pf), "box": tr["boxes"][pf], "thumb": f"thumb_{k}.jpg"})
         for t, b in tr["boxes"].items():
             boxes_by_frame[t].append((k, tr["cls"], b))
+    update(jid, objects=objs, stage="detected", result=None, labels={}, labels_drawn={})
     # YOLO + IoU 关联的结果视频（只有框），用来和 SAM 2 的结果对照
+    write_boxes_video(jid, boxes_by_frame, load_job(jid))
+    log(jid, f"found {len(objs)} object instances: " + (", ".join(f"#{o['id']} {o['cls']}" for o in objs) or "nothing"))
+
+
+# ---------- 自定义名称：视频里显示的名字 ----------
+# 名字只允许英文（OpenCV 的 putText 画不了中文，会变成问号）：字母、数字、空格和少量符号
+NAME_RE = __import__("re").compile(r"^[A-Za-z0-9 ._()'&+/-]*$")
+
+
+def display_name(job, k, cls):
+    """和网页的 nameOf 一样：先看 k 所属的整个物体（合并后的编号）的名字，再看合并进来的各个检测编号；都没有就用原类别。"""
+    labels = job.get("labels") or {}
+    tracks = (job.get("result") or {}).get("tracks") or []
+    t = next((t for t in tracks if t["id"] == k or k in t.get("merged_from", [])), None)
+    ids = [t["id"], *t.get("merged_from", [])] if t else [k]
+    hit = next((labels[str(i)] for i in ids if str(i) in labels), None)
+    return hit if hit is not None else cls
+
+
+def write_boxes_video(jid, boxes_by_frame, job):
+    fps, size = job["fps"], (job["width"], job["height"])
     vo = VideoOut(jdir(jid, "out", "boxes.mp4"), fps, size)
     lw = max(2, size[0] // 400)
-    for t in range(n):
+    for t in range(job["frames"]):
         f = imread(frame_path(jid, t))
         for k, cls, b in boxes_by_frame[t]:
-            draw_tag(f, k, cls, [int(v) for v in b], color(k), lw)
+            draw_tag(f, k, display_name(job, k, cls), [int(v) for v in b], color(k), lw)
         vo.write(f)
     vo.close()
-    update(jid, objects=objs, stage="detected", result=None)
-    log(jid, f"found {len(objs)} object instances: " + (", ".join(f"#{o['id']} {o['cls']}" for o in objs) or "nothing"))
+
+
+def render_boxes(jid):
+    """重画检测预览视频。检测框没有单独保存，从 detections.json 重新关联：link_tracks 是确定性的，编号和第一次完全一样。"""
+    job = load_job(jid)
+    with open(jdir(jid, "detections.json"), encoding="utf-8") as fh:
+        dets = json.load(fh)
+    tracks = link_tracks(dets)
+    tracks.sort(key=lambda tr: min(tr["boxes"]))
+    if len(tracks) != len([o for o in job.get("objects", []) if not o.get("manual")]):  # 手动框选的物体没有检测框，不画
+        raise RuntimeError("detections changed since this job was created")
+    boxes_by_frame = [[] for _ in range(job["frames"])]
+    for k, tr in enumerate(tracks, start=1):
+        for t, b in tr["boxes"].items():
+            boxes_by_frame[t].append((k, tr["cls"], b))
+    write_boxes_video(jid, boxes_by_frame, job)
+
+
+def add_manual(jid, name, frame, box):
+    """手动框选检测器不认识的物体（COCO 80 类以外，例如扑克牌、纸袋）。
+    和检测到的实例一样进列表：提示帧 = 框选的那一帧，SAM 2 从这个框开始向前、向后追踪。编号接在已有编号后面。"""
+    job = load_job(jid)
+    objs = job.get("objects", [])
+    k = max([o["id"] for o in objs], default=0) + 1
+    img = imread(frame_path(jid, frame))
+    h, w = img.shape[:2]
+    x0, y0, x1, y1 = [int(round(v)) for v in box]
+    x0, x1 = max(0, min(x0, x1)), min(w, max(x0, x1))
+    y0, y1 = max(0, min(y0, y1)), min(h, max(y0, y1))
+    crop = img[y0:y1, x0:x1]
+    imwrite(jdir(jid, "out", f"thumb_{k}.jpg"), cv2.resize(crop, (max(8, round(80 * crop.shape[1] / crop.shape[0])), 80)))
+    objs.append({"id": k, "cls": name, "color": HEX[(k - 1) % len(HEX)], "yolo_frames": 0, "yolo_segments": [],
+                 "best_score": None, "prompt_frame": int(frame), "box": [float(x0), float(y0), float(x1), float(y1)],
+                 "thumb": f"thumb_{k}.jpg", "manual": True})
+    update(jid, objects=objs)
+    log(jid, f"added by hand: #{k} {name} (frame {frame}, box {x0},{y0},{x1},{y1})")
+    return k
+
+
+def relabel(jid):
+    """改名后只重画视频和轨迹表（不重新检测、不重新跑 SAM 2）。"""
+    job = load_job(jid)
+    render_boxes(jid)
+    if job.get("stage") == "tracked" and job.get("result"):
+        update(jid, progress=40)
+        render_tracked(jid, 40, 95)
+    update(jid, labels_drawn=dict(job.get("labels") or {}))
+    log(jid, "videos redrawn with the new names: " + (", ".join(f"#{k} {v}" for k, v in (job.get("labels") or {}).items()) or "original classes"))
 
 
 def draw_tag(img, k, cls, box, col, lw):
@@ -278,50 +346,21 @@ def track(jid, ids):
         info[i]["cls"] = max(votes, key=votes.get)
     stats = {i: {"frames": 0, "area": 0.0, "present": [False] * n} for i in finals}
     size = (job["width"], job["height"])
-    half = (360, round(360 * size[1] / size[0] / 2) * 2)
-    vo, vc = VideoOut(jdir(jid, "out", "tracked.mp4"), fps, size), VideoOut(jdir(jid, "out", "compare.mp4"), fps, (720, half[1]))
-    lw = max(2, size[0] // 400)
-    rows = ["frame,time_s,id,class,x,y,w,h,mask_area_px"]
     # 结果视频按最终物体的顺序重新配色（前几种颜色最好区分），编号不变
-    fcol = {i: PALETTE[r % len(PALETTE)] for r, i in enumerate(finals)}
     for r, i in enumerate(finals):
         info[i]["color"] = HEX[r % len(HEX)]
-    colors_lut = np.zeros((256, 3), np.uint8)
-    for i in finals:
-        colors_lut[i] = fcol[i]
     for t in range(n):
-        f = imread(frame_path(jid, t))
         # 合并编号；中值滤波去掉两个 mask 打分接近处的椒盐状碎点（标签图里只有少数几个值，中值滤波相当于局部多数投票）
         lab = cv2.medianBlur(lut[imread(label_path(jid, t), cv2.IMREAD_UNCHANGED)], 5)
         imwrite(label_path(jid, t), lab)
-        vis = f.copy()
-        sel = lab > 0
-        vis[sel] = (f[sel] * 0.5 + colors_lut[lab[sel]] * 0.5).astype(np.uint8)
-        for i in np.unique(lab[sel]) if sel.any() else []:
-            m = (lab == i).astype(np.uint8)
-            area = int(cv2.countNonZero(m))
+        for i in np.unique(lab[lab > 0]):
+            area = int(np.count_nonzero(lab == i))
             if area < 30:
                 continue
-            x, y, w, h = cv2.boundingRect(m)
-            cs, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cv2.drawContours(vis, cs, -1, fcol[int(i)], lw)
-            draw_tag(vis, int(i), info[int(i)]["cls"], [x, y, x + w, y + h], fcol[int(i)], 1)
             st = stats[int(i)]
             st["frames"] += 1
             st["area"] += area
             st["present"][t] = True
-            rows.append(f"{t},{t / fps:.3f},{int(i)},{info[int(i)]['cls']},{x},{y},{w},{h},{area}")
-        cv2.putText(vis, f"{t / fps:5.1f}s", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-        vo.write(vis)
-        vc.write(np.hstack([cv2.resize(f, half, interpolation=cv2.INTER_AREA), cv2.resize(vis, half, interpolation=cv2.INTER_AREA)]))
-        if t % 20 == 0:
-            update(jid, progress=85 + int(14 * t / n))
-    vo.close()
-    vc.close()
-    with open(jdir(jid, "out", "tracks.csv"), "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("\n".join(rows) + "\n")
-    zp = jdir(jid, "out", "label_masks")
-    shutil.make_archive(zp, "zip", jdir(jid, "labels"))
 
     tracked = []
     for i in finals:
@@ -333,8 +372,61 @@ def track(jid, ids):
                         "sam_frames": st["frames"], "sam_segments": find_segments(st["present"], min_len=1, max_gap=2, margin=0),
                         "mean_area_pct": round(100 * st["area"] / max(1, st["frames"]) / (size[0] * size[1]), 2),
                         "merged_from": [a for a, b in merge.items() if b == i and a != i]})
-    update(jid, stage="tracked", result={"tracks": tracked, "selected": len(objs)})
-    log(jid, "tracked: " + ", ".join(f"#{o['id']} {o['cls']} ({o['sam_frames']} frames)" for o in tracked))
+    update(jid, result={"tracks": tracked, "selected": len(objs)})
+    job = load_job(jid)
+    render_tracked(jid, 85, 99)  # 视频里用改过的名字（第 2 步追踪前改的名字也算）
+    if (job.get("labels") or {}) != (job.get("labels_drawn") or {}):
+        render_boxes(jid)  # 追踪前改过名字、还没重画：检测预览视频一起更新
+    update(jid, stage="tracked", labels_drawn=dict(job.get("labels") or {}))
+    log(jid, "tracked: " + ", ".join(f"#{o['id']} {display_name(job, o['id'], o['cls'])} ({o['sam_frames']} frames)" for o in tracked))
+
+
+def render_tracked(jid, p0=40, p1=95):
+    """按 labels/ 里已经合并好的标签图画追踪结果视频、并排对比视频、轨迹表和 mask 压缩包。
+    追踪结束时调用一次；之后改名只调用这一步（几秒到十几秒），不重跑 SAM 2。"""
+    job = load_job(jid)
+    n, fps = job["frames"], job["fps"]
+    tracks = job["result"]["tracks"]
+    size = (job["width"], job["height"])
+    half = (360, round(360 * size[1] / size[0] / 2) * 2)
+    lw = max(2, size[0] // 400)
+    fcol = {t["id"]: (int(t["color"][5:7], 16), int(t["color"][3:5], 16), int(t["color"][1:3], 16)) for t in tracks}  # BGR
+    names = {t["id"]: display_name(job, t["id"], t["cls"]) for t in tracks}
+    colors_lut = np.zeros((256, 3), np.uint8)
+    for i, c in fcol.items():
+        colors_lut[i] = c
+    vo, vc = VideoOut(jdir(jid, "out", "tracked.mp4"), fps, size), VideoOut(jdir(jid, "out", "compare.mp4"), fps, (720, half[1]))
+    rows = ["frame,time_s,id,class,name,x,y,w,h,mask_area_px"]  # class = YOLOX 原类别，name = 显示的名字（没改过就等于 class）
+    for t in range(n):
+        f = imread(frame_path(jid, t))
+        lab = imread(label_path(jid, t), cv2.IMREAD_UNCHANGED)
+        vis = f.copy()
+        sel = lab > 0
+        vis[sel] = (f[sel] * 0.5 + colors_lut[lab[sel]] * 0.5).astype(np.uint8)
+        for i in np.unique(lab[sel]) if sel.any() else []:
+            i = int(i)
+            if i not in fcol:
+                continue
+            m = (lab == i).astype(np.uint8)
+            area = int(cv2.countNonZero(m))
+            if area < 30:
+                continue
+            x, y, w, h = cv2.boundingRect(m)
+            cs, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(vis, cs, -1, fcol[i], lw)
+            draw_tag(vis, i, names[i], [x, y, x + w, y + h], fcol[i], 1)
+            cls = next(tr["cls"] for tr in tracks if tr["id"] == i)
+            rows.append(f"{t},{t / fps:.3f},{i},{cls},{names[i].replace(',', ' ')},{x},{y},{w},{h},{area}")
+        cv2.putText(vis, f"{t / fps:5.1f}s", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        vo.write(vis)
+        vc.write(np.hstack([cv2.resize(f, half, interpolation=cv2.INTER_AREA), cv2.resize(vis, half, interpolation=cv2.INTER_AREA)]))
+        if t % 20 == 0:
+            update(jid, progress=p0 + int((p1 - p0) * t / n))
+    vo.close()
+    vc.close()
+    with open(jdir(jid, "out", "tracks.csv"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n".join(rows) + "\n")
+    shutil.make_archive(jdir(jid, "out", "label_masks"), "zip", jdir(jid, "labels"))
 
 
 # ---------- HTTP ----------
@@ -352,6 +444,8 @@ class Handler(ea.Handler):
             jid = parts[2]
             if len(parts) == 3:
                 return self.send_json(load_job(jid))
+            if len(parts) == 5 and parts[3] == "frame" and parts[4].isdigit():  # 手动框选用的单帧画面
+                return self.send_file(frame_path(jid, int(parts[4])))
             if len(parts) == 5 and parts[3] in ("file", "download") and ea.NAME_RE.match(parts[4]):
                 path = jdir(jid, "original.mp4") if parts[4] == "original.mp4" else jdir(jid, "out", parts[4])
                 return self.send_file(path, download=f"{jid}_{parts[4]}" if parts[3] == "download" else None)
@@ -381,6 +475,8 @@ class Handler(ea.Handler):
         if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "label" and ea.ID_RE.match(parts[2]) and os.path.isdir(jdir(parts[2])):
             # 自定义物体名称：只改显示用的名字（job.json 的 labels），编号、mask 和 YOLOX 原类别都不变；空字符串 = 恢复原类别
             jid = parts[2]
+            if jid in SHOW_IDS:
+                return self.send_json({"error": "this is a saved test result (read-only)"}, 403)
             job = load_job(jid)
             if job.get("busy"):
                 return self.send_json({"error": f"still running: {job['busy']}"}, 409)
@@ -392,6 +488,8 @@ class Handler(ea.Handler):
             if oid not in {o["id"] for o in job.get("objects", [])}:
                 return self.send_json({"error": "unknown object"}, 400)
             name = " ".join(str(body.get("name", "")).split())[:40]
+            if not NAME_RE.match(name):  # 视频里的标签用 OpenCV 画，只能显示英文
+                return self.send_json({"error": "names can use English letters, digits, spaces and . _ - ( ) ' & + / only"}, 400)
             labels = dict(job.get("labels") or {})
             for other in body.get("same", []):  # 合并进这个物体的其他编号：名字统一存在物体编号上
                 labels.pop(str(other), None)
@@ -401,6 +499,52 @@ class Handler(ea.Handler):
                 labels.pop(str(oid), None)
             update(jid, labels=labels)
             return self.send_json({"labels": labels})
+        if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] in ("manual", "manual_del") and ea.ID_RE.match(parts[2]) and os.path.isdir(jdir(parts[2])):
+            # 手动框选物体 / 删掉手动框选的物体（检测到的实例不能删，只能不勾选）
+            jid = parts[2]
+            if jid in SHOW_IDS:
+                return self.send_json({"error": "this is a saved test result (read-only)"}, 403)
+            job = load_job(jid)
+            if job.get("busy"):
+                return self.send_json({"error": f"still running: {job['busy']}"}, 409)
+            if job.get("stage") not in ("detected", "tracked"):
+                return self.send_json({"error": "wait for the detection to finish"}, 400)
+            body = json.loads(self.body() or b"{}")
+            if parts[3] == "manual":
+                name = " ".join(str(body.get("name", "")).split())[:40] or "object"
+                if not NAME_RE.match(name):
+                    return self.send_json({"error": "names can use English letters, digits, spaces and . _ - ( ) ' & + / only"}, 400)
+                try:
+                    frame, box = int(body["frame"]), [float(v) for v in body["box"]]
+                except (KeyError, TypeError, ValueError):
+                    return self.send_json({"error": "need a frame and a box"}, 400)
+                if len(box) != 4 or not (0 <= frame < job.get("frames", 0)) or box[2] - box[0] < 8 or box[3] - box[1] < 8:
+                    return self.send_json({"error": "drag a box around the object first"}, 400)
+                return self.send_json({"id": add_manual(jid, name, frame, box)})
+            try:
+                oid = int(body.get("id"))
+            except (TypeError, ValueError):
+                return self.send_json({"error": "bad object id"}, 400)
+            objs = job.get("objects", [])
+            if not any(o["id"] == oid and o.get("manual") for o in objs):
+                return self.send_json({"error": "only objects added by hand can be removed"}, 400)
+            labels = {k: v for k, v in (job.get("labels") or {}).items() if k != str(oid)}
+            drawn = {k: v for k, v in (job.get("labels_drawn") or {}).items() if k != str(oid)}
+            update(jid, objects=[o for o in objs if o["id"] != oid], labels=labels, labels_drawn=drawn)
+            log(jid, f"removed #{oid} (added by hand)")
+            return self.send_json({"ok": True})
+        if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "relabel" and ea.ID_RE.match(parts[2]) and os.path.isdir(jdir(parts[2])):
+            # 只按新名字重画视频和轨迹表，不重新检测、不重跑 SAM 2
+            jid = parts[2]
+            if jid in SHOW_IDS:
+                return self.send_json({"error": "this is a saved test result (read-only)"}, 403)
+            job = load_job(jid)
+            if job.get("busy"):
+                return self.send_json({"error": f"still running: {job['busy']}"}, 409)
+            if job.get("stage") not in ("detected", "tracked"):
+                return self.send_json({"error": "nothing to redraw yet"}, 400)
+            run_bg(jid, "rename", relabel)
+            return self.send_json({"ok": True})
         if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "track" and ea.ID_RE.match(parts[2]) and os.path.isdir(jdir(parts[2])):
             jid = parts[2]
             if jid in SHOW_IDS:
